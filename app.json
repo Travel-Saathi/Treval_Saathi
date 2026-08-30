@@ -4,7 +4,7 @@
     "slug": "clerk-expo",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/1logo.png",
     "scheme": "clerkexpo",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -29,7 +29,7 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/1logo.png",
           "imageWidth": 76
         }
       ],
