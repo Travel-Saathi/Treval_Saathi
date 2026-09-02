@@ -1,4 +1,4 @@
-import { useAuth, useSignIn } from '@clerk/expo'
+import { useAuth, useClerk, useSignIn } from '@clerk/expo'
 import { Link, router } from 'expo-router'
 import { useState } from 'react'
 import {
@@ -14,12 +14,14 @@ import {
 
 export default function SignInScreen() {
   const { isLoaded, isSignedIn } = useAuth()
-  const { signIn } = useSignIn()
-
+const { signIn } = useSignIn()
+const { setActive } = useClerk()
   const [emailAddress, setEmailAddress] = useState('')
   const [password, setPassword] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  const [needsClientTrust, setNeedsClientTrust] = useState(false)
 
   const onSignInPress = async () => {
     if (!isLoaded || loading) return
@@ -28,25 +30,240 @@ export default function SignInScreen() {
       setLoading(true)
       setErrorMessage('')
 
+      console.log('SIGN IN STARTED')
+      console.log('CLERK LOADED:', isLoaded)
+      console.log('CLERK SIGNED IN:', isSignedIn)
+
       const { error } = await signIn.password({
         emailAddress: emailAddress.trim(),
         password,
       })
 
+      console.log('SIGN IN RESULT STATUS:', signIn.status)
+
       if (error) {
+        console.log('SIGN IN ERROR CODE:', error.code)
+        console.log('SIGN IN ERROR MESSAGE:', error.message)
+
         setErrorMessage('Invalid email or password.')
         return
       }
 
+      /*
+       * Clerk Device Trust
+       */
+      if (signIn.status === 'needs_client_trust') {
+        console.log(
+          'DEVICE TRUST REQUIRED, SUPPORTED FACTORS:',
+          signIn.supportedSecondFactors
+        )
+
+        const emailCodeFactor = signIn.supportedSecondFactors?.find(
+          (factor) => factor.strategy === 'email_code'
+        )
+
+        if (!emailCodeFactor) {
+          console.log('EMAIL CODE FACTOR NOT AVAILABLE')
+
+          setErrorMessage(
+            'Device verification is not available for this account.'
+          )
+
+          return
+        }
+
+        try {
+          console.log('SENDING DEVICE TRUST EMAIL CODE')
+
+          await signIn.mfa.sendEmailCode()
+
+          console.log('DEVICE TRUST EMAIL CODE SENT')
+
+          setNeedsClientTrust(true)
+          setVerificationCode('')
+          setErrorMessage('')
+
+          return
+        } catch (error) {
+          console.error(
+            'ERROR SENDING DEVICE TRUST EMAIL CODE:',
+            error
+          )
+
+          setErrorMessage(
+            'Unable to send verification code. Please try again.'
+          )
+
+          return
+        }
+      }
+
+      /*
+       * Sign-in is complete.
+       *
+       * IMPORTANT:
+       * Activate the Clerk session BEFORE navigating.
+       * Otherwise the router/root layout can still see
+       * isSignedIn === false for a short period.
+       */
       if (signIn.status === 'complete') {
-        router.replace('/(root)/(tabs)')
+        console.log('[AUTH_DEBUG] LOGIN_SUCCESS')
+        console.log('SIGN IN COMPLETE')
+        console.log(
+          '[AUTH_DEBUG] CREATED SESSION ID:',
+          signIn.createdSessionId
+        )
+
+        if (!signIn.createdSessionId) {
+          console.error(
+            '[AUTH_DEBUG] NO CREATED SESSION ID AFTER SIGN IN'
+          )
+
+          setErrorMessage(
+            'Sign in completed, but the session could not be activated. Please try again.'
+          )
+
+          return
+        }
+
+        console.log('[AUTH_DEBUG] ACTIVATING CLERK SESSION')
+
+        await setActive({
+          session: signIn.createdSessionId,
+        })
+
+        console.log('[AUTH_DEBUG] CLERK SESSION ACTIVATED')
+
+        /*
+         * Keep the existing navigation behavior.
+         * The only change is that the session is activated first.
+         */
+        router.replace('../(root)/(tabs)')
+
         return
       }
 
+      console.log(
+        'SIGN IN DID NOT COMPLETE. STATUS:',
+        signIn.status
+      )
+
       setErrorMessage('Sign in could not be completed.')
     } catch (error) {
-      console.error('Sign in error:', error)
+      console.error('SIGN IN ERROR:', error)
+
       setErrorMessage('Invalid email or password.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const onVerifyCode = async () => {
+    if (!isLoaded || loading) return
+
+    const code = verificationCode.trim()
+
+    if (!code) {
+      setErrorMessage('Please enter the verification code.')
+      return
+    }
+
+    try {
+      setLoading(true)
+      setErrorMessage('')
+
+      console.log('VERIFYING DEVICE TRUST EMAIL CODE')
+
+      const { error } = await signIn.mfa.verifyEmailCode({
+        code,
+      })
+
+      console.log(
+        'DEVICE TRUST VERIFICATION STATUS:',
+        signIn.status
+      )
+
+      if (error) {
+        console.log(
+          'DEVICE TRUST VERIFICATION ERROR CODE:',
+          error.code
+        )
+
+        console.log(
+          'DEVICE TRUST VERIFICATION ERROR:',
+          error.message
+        )
+
+        setErrorMessage(
+          'Invalid verification code. Please try again.'
+        )
+
+        return
+      }
+
+      if (signIn.status === 'complete') {
+        console.log(
+          'SIGN IN COMPLETE AFTER DEVICE TRUST VERIFICATION'
+        )
+
+        console.log(
+          '[AUTH_DEBUG] CREATED SESSION ID:',
+          signIn.createdSessionId
+        )
+
+        if (!signIn.createdSessionId) {
+          console.error(
+            '[AUTH_DEBUG] NO CREATED SESSION ID AFTER DEVICE TRUST'
+          )
+
+          setErrorMessage(
+            'Verification completed, but the session could not be activated.'
+          )
+
+          return
+        }
+
+        console.log(
+          '[AUTH_DEBUG] ACTIVATING CLERK SESSION AFTER DEVICE TRUST'
+        )
+
+        await setActive({
+          session: signIn.createdSessionId,
+        })
+
+        console.log(
+          '[AUTH_DEBUG] CLERK SESSION ACTIVATED AFTER DEVICE TRUST'
+        )
+
+        setNeedsClientTrust(false)
+        setVerificationCode('')
+
+        /*
+         * Keep existing navigation.
+         * Session activation happens first.
+         */
+        router.replace('../(root)/(tabs)')
+
+        return
+      }
+
+      console.log(
+        'DEVICE TRUST VERIFICATION DID NOT COMPLETE. STATUS:',
+        signIn.status
+      )
+
+      setErrorMessage(
+        'Verification could not be completed.'
+      )
+    } catch (error) {
+      console.error(
+        'DEVICE TRUST VERIFICATION ERROR:',
+        error
+      )
+
+      setErrorMessage(
+        'Unable to verify code. Please try again.'
+      )
     } finally {
       setLoading(false)
     }
@@ -101,42 +318,72 @@ export default function SignInScreen() {
             </Text>
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>EMAIL ADDRESS</Text>
+          {!needsClientTrust ? (
+            <>
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>EMAIL ADDRESS</Text>
 
-            <View style={styles.inputWrapper}>
-              <Text style={styles.inputIcon}>✉</Text>
+                <View style={styles.inputWrapper}>
+                  <Text style={styles.inputIcon}>✉</Text>
 
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your email"
-                placeholderTextColor="#9BA79E"
-                value={emailAddress}
-                onChangeText={setEmailAddress}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter your email"
+                    placeholderTextColor="#9BA79E"
+                    value={emailAddress}
+                    onChangeText={setEmailAddress}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.label}>PASSWORD</Text>
+
+                <View style={styles.inputWrapper}>
+                  <Text style={styles.inputIcon}>●</Text>
+
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter your password"
+                    placeholderTextColor="#9BA79E"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                    autoCapitalize="none"
+                  />
+                </View>
+              </View>
+            </>
+          ) : (
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>
+                VERIFICATION CODE
+              </Text>
+
+              <Text style={styles.verificationNote}>
+                We sent a code to your email. Enter it below.
+              </Text>
+
+              <View style={styles.inputWrapper}>
+                <Text style={styles.inputIcon}>⌘</Text>
+
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter code"
+                  placeholderTextColor="#9BA79E"
+                  value={verificationCode}
+                  onChangeText={setVerificationCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
             </View>
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>PASSWORD</Text>
-
-            <View style={styles.inputWrapper}>
-              <Text style={styles.inputIcon}>●</Text>
-
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your password"
-                placeholderTextColor="#9BA79E"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                autoCapitalize="none"
-              />
-            </View>
-          </View>
+          )}
 
           {errorMessage ? (
             <View style={styles.errorBox}>
@@ -151,11 +398,21 @@ export default function SignInScreen() {
               styles.button,
               loading && styles.buttonDisabled,
             ]}
-            onPress={onSignInPress}
+            onPress={
+              needsClientTrust
+                ? onVerifyCode
+                : onSignInPress
+            }
             disabled={loading}
           >
             <Text style={styles.buttonText}>
-              {loading ? 'Signing In...' : 'Sign In'}
+              {loading
+                ? needsClientTrust
+                  ? 'Verifying...'
+                  : 'Signing In...'
+                : needsClientTrust
+                  ? 'Verify Code'
+                  : 'Sign In'}
             </Text>
 
             <Text style={styles.buttonArrow}>→</Text>
@@ -164,7 +421,9 @@ export default function SignInScreen() {
           <View style={styles.dividerContainer}>
             <View style={styles.divider} />
 
-            <Text style={styles.dividerText}>NEW TO TRAVELER?</Text>
+            <Text style={styles.dividerText}>
+              NEW TO TRAVELER?
+            </Text>
 
             <View style={styles.divider} />
           </View>
@@ -174,13 +433,18 @@ export default function SignInScreen() {
               Start your adventure today
             </Text>
 
-            <Link href="/(auth)/sign-up" asChild>
+            <Link
+              href="/(auth)/sign-up"
+              asChild
+            >
               <Pressable style={styles.signupButton}>
                 <Text style={styles.signupLink}>
                   Create Account
                 </Text>
 
-                <Text style={styles.signupArrow}>→</Text>
+                <Text style={styles.signupArrow}>
+                  →
+                </Text>
               </Pressable>
             </Link>
           </View>
@@ -358,6 +622,13 @@ const styles = StyleSheet.create({
     height: '100%',
     fontSize: 16,
     color: '#1F2937',
+  },
+
+  verificationNote: {
+    fontSize: 13,
+    color: '#718077',
+    marginBottom: 12,
+    lineHeight: 18,
   },
 
   errorBox: {

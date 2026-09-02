@@ -122,7 +122,7 @@ export default function SignUpScreen() {
     if (signUp.status === 'complete') {
   await signUp.finalize({
     navigate: ({ decorateUrl }) => {
-      const url = decorateUrl('/(root)/(tabs)')
+      const url = decorateUrl('/(root)')
       router.replace(url as any)
     },
   })
@@ -209,7 +209,7 @@ const createAccount = async () => {
 
     // Do not call finalize() here when there is no created session.
     // The Clerk user has already been created once status is complete.
-    router.replace('/(root)/(tabs)')
+    router.replace('../(root)')
 
   } catch (err) {
     console.error('Create account error:', err)
