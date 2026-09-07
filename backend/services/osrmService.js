@@ -137,11 +137,15 @@ async function getRouteBetween(
  *   { latitude: 23.241, longitude: 77.429 }
  * ])
  *
- * Optionally returns route geometry.
+*  Optionally returns route geometry.
+ *
+ *  `format` controls the geometry encoding when `geometry` is true:
+ *   - "polyline" (default) -> OSRM encoded polyline
+ *   - "geojson"            -> GeoJSON LineString
  */
 async function getRoute(
   coordinates,
-  { geometry = false } = {}
+  { geometry = false, format = "polyline" } = {}
 ) {
   if (
     !Array.isArray(coordinates) ||
@@ -149,6 +153,15 @@ async function getRoute(
   ) {
     throw new Error(
       "getRoute requires at least 2 coordinates"
+    );
+  }
+
+  if (
+    format !== "polyline" &&
+    format !== "geojson"
+  ) {
+    throw new Error(
+      "format must be \"polyline\" or \"geojson\""
     );
   }
 
@@ -161,9 +174,14 @@ async function getRoute(
     ? "full"
     : "false";
 
+  const geometries = geometry
+    ? `&geometries=${format}`
+    : "";
+
   const data = await fetchOsrm(
     `/route/v1/driving/${coords}` +
       `?overview=${overview}` +
+      geometries +
       `&steps=false` +
       `&alternatives=false`
   );

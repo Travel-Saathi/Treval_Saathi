@@ -8,7 +8,9 @@
 export { default } from "./PlaceMap.native";
 
 export type {
+  JourneyStopMarker,
   PlaceMapDestination,
   PlaceMapProps,
   PlaceMapRegion,
+  RouteCoordinate,
 } from "./PlaceMap.types";

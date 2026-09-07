@@ -1,6 +1,5 @@
-const API_BASE_URL = "http://localhost:5000";
-
-async function searchLocation(query, signal) {
+export const API_BASE_URL = "http://localhost:5000";
+export async function searchLocation(query, signal) {
   const q = query.trim();
 
   if (q.length < 2) {

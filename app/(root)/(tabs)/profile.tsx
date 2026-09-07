@@ -7,7 +7,6 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,6 +15,8 @@ import {
   View,
   useColorScheme,
 } from "react-native";
+
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSupabase } from "../../../hook/usesupabase";
 

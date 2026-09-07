@@ -2,13 +2,20 @@ import { useUser } from "@clerk/expo";
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs, router } from "expo-router";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 function NavigationHeader() {
   const { user } = useUser();
+  const insets = useSafeAreaInsets();
   const displayName = user?.firstName || user?.fullName || "User";
 
   return (
-    <View style={styles.header}>
+    <View
+      style={[
+        styles.header,
+        { height: insets.top + 64, paddingTop: insets.top },
+      ]}
+    >
       <View style={styles.brandGroup}>
         <Image
           source={require("../../../assets/images/2logo.png")}

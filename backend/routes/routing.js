@@ -257,8 +257,18 @@ router.get("/route", async (req, res) => {
 
     const includeGeometry = String(req.query.geometry || "false") === "true";
 
+    const format = String(req.query.format || "polyline");
+
+    if (format !== "polyline" && format !== "geojson") {
+      return res.status(400).json({
+        message:
+          "Invalid format (must be \"polyline\" or \"geojson\")",
+      });
+    }
+
     const route = await getRoute(coords.value, {
       geometry: includeGeometry,
+      format,
     });
 
     return res.json(route);

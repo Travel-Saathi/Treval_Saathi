@@ -9,6 +9,8 @@ export default function PlaceMap({
   selectedPlace: _selectedPlace,
   initialRegion: _initialRegion,
   onPlacePress: _onPlacePress,
+  journeyStops: _journeyStops,
+  routeCoordinates: _routeCoordinates,
 }: PlaceMapProps) {
   return (
     <View style={styles.webMap}>

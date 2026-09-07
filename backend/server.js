@@ -12,6 +12,10 @@ const {
   normalizeOsmCategories,
 } = require("./providers/overpassPlaces");
 
+const {
+  getWeather,
+} = require("./services/weatherService");
+
 const app = express();
 
 app.use(cors());
@@ -468,6 +472,70 @@ app.get("/api/osm/test", (req, res) => {
   return res.json({
     message: "OSM diagnostic route is active",
   });
+});
+
+/* --------------------------------------------------
+   Weather
+   Open-Meteo current, hourly and daily forecast
+-------------------------------------------------- */
+
+app.get("/api/weather", async (req, res) => {
+  try {
+    const { lat, lon } = req.query;
+
+    if (lat === undefined || lon === undefined) {
+      return res.status(400).json({
+        message:
+          "Latitude and longitude are required",
+      });
+    }
+
+    const latitude = Number(lat);
+    const longitude = Number(lon);
+
+    if (
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90
+    ) {
+      return res.status(400).json({
+        message:
+          "Invalid latitude (must be between -90 and 90)",
+      });
+    }
+
+    if (
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      return res.status(400).json({
+        message:
+          "Invalid longitude (must be between -180 and 180)",
+      });
+    }
+
+    const weather = await getWeather({
+      latitude,
+      longitude,
+    });
+
+    return res.json(weather);
+  } catch (error) {
+    console.error(
+      "Weather error:",
+      error
+    );
+
+    return res.status(502).json({
+      message:
+        "Weather request failed",
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error),
+    });
+  }
 });
 
 /* --------------------------------------------------
