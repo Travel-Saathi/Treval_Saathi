@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -26,6 +26,7 @@ import { useSupabase } from "../../hook/usesupabase";
 import {
   getJourneyRoute,
   resolveCityCoordinates,
+  validateStopAgainstRoute,
   type RoutePoint,
 } from "../../services/routeApi";
 import {
@@ -47,6 +48,7 @@ import {
   searchTransportOptions,
   type TransportAvailability,
   type TransportMode,
+  type TransportOption,
 } from "../../services/transportApi";
 import {
   getWeather as fetchWeather,
@@ -270,6 +272,7 @@ export default function JourneySetupScreen() {
     useState(false);
   const [transportSaving, setTransportSaving] = useState(false);
   const [transportBusy, setTransportBusy] = useState(false);
+  const [transportSearching, setTransportSearching] = useState(true);
   const [transportError, setTransportError] = useState<string | null>(null);
   const [draft, setDraft] = useState<TransportDraft | null>(null);
 
@@ -375,8 +378,13 @@ export default function JourneySetupScreen() {
     }).then((result) => {
       if (!cancelled) {
         setTransportAvailability(result);
+        setTransportSearching(false);
       }
     });
+
+    if (activeMode === "train") {
+      setTransportSearching(true);
+    }
 
     return () => {
       cancelled = true;
@@ -539,20 +547,51 @@ export default function JourneySetupScreen() {
      Stops
   -------------------------------------------------- */
 
-  async function refreshStops() {
+  const validateCandidate = useCallback(
+    async (location: CitySelection): Promise<string | null> => {
+      const coords = routeCoordinates;
+
+      if (!coords || coords.length < 2) {
+        return "Route information is unavailable. Please try again.";
+      }
+
+      const result = validateStopAgainstRoute(location, coords);
+
+      if (result.valid) {
+        return null;
+      }
+
+      switch (result.code) {
+        case "before-source":
+          return `${location.name} is before your starting point.`;
+
+        case "after-destination":
+          return `${location.name} is past your destination.`;
+
+        case "too-far":
+          return result.distanceKm !== null
+            ? `${location.name} is ${Math.round(result.distanceKm)} km off your current route.`
+            : `${location.name} isn't along your current route.`;
+
+        default:
+          return "Route information is unavailable. Please try again.";
+      }
+    },
+    [routeCoordinates]
+  );
+
+  async function handleAddStop(location: CitySelection) {
     if (!tripId) {
       return;
     }
 
-    const rows = await listStops(supabase, tripId);
+    const coords = routeCoordinates;
 
-    setStops(rows);
-  }
-
-  async function handleAddStop(location: CitySelection) {
-    setStopSheetVisible(false);
-
-    if (!tripId) {
+    if (!coords || coords.length < 2) {
+      setFlash({
+        kind: "error",
+        text: "Route information is unavailable. Please try again.",
+      });
       return;
     }
 
@@ -580,9 +619,7 @@ export default function JourneySetupScreen() {
       return;
     }
 
-    if (
-      stops.some((stop) => stop.city.toLowerCase() === lower)
-    ) {
+    if (stops.some((stop) => stop.city.toLowerCase() === lower)) {
       setFlash({
         kind: "error",
         text: `${location.name} is already a stop.`,
@@ -590,16 +627,65 @@ export default function JourneySetupScreen() {
       return;
     }
 
+    const validation = validateStopAgainstRoute(location, coords);
+
+    if (!validation.valid || validation.fraction === null) {
+      setFlash({
+        kind: "error",
+        text: `${location.name} isn't along your current route.`,
+      });
+      return;
+    }
+
     setBusyStopId("__add__");
 
     try {
-      await addStopRow(supabase, tripId, location.name, null, null);
+      // Find where this stop lies along the current route (0=source, 1=destination)
+      // so it can be inserted at the correct position, not just appended.
+      const existingWithFractions: {
+        stop: TripStop;
+        fraction: number;
+      }[] = [];
 
-      await refreshStops();
+      for (const stop of stops) {
+        const coordinate = await resolveCityCoordinates(stop.city);
+
+        const stopValidation = validateStopAgainstRoute(
+          coordinate,
+          coords
+        );
+
+        existingWithFractions.push({
+          stop,
+          fraction: stopValidation.fraction ?? 0,
+        });
+      }
+
+      const row = await addStopRow(supabase, tripId, location.name, null, null);
+
+      const ordered = [
+        ...existingWithFractions,
+        { stop: row, fraction: validation.fraction },
+      ];
+
+      ordered.sort((a, b) => a.fraction - b.fraction);
+
+      const orderedStops = ordered.map((entry) => entry.stop);
+
+      await saveStopOrder(
+        supabase,
+        orderedStops.map((stop, index) => ({
+          id: stop.id,
+          stop_order: index + 1,
+        }))
+      );
+
+      setStops(orderedStops);
+      setStopSheetVisible(false);
 
       setFlash({
         kind: "success",
-        text: `${location.name} added as a stop.`,
+        text: `${location.name} added to your route.`,
       });
     } catch (error) {
       console.error("ADD STOP ERROR:", error);
@@ -787,6 +873,58 @@ export default function JourneySetupScreen() {
     }
   }
 
+  async function handleSelectTransportOption(option: TransportOption) {
+    if (option.mode !== "train") {
+      if (option.mode !== "unknown") {
+        setActiveMode(option.mode);
+      }
+      return;
+    }
+
+    if (!tripId) {
+      return;
+    }
+
+    setTransportSaving(true);
+    setTransportError(null);
+
+    const input: SaveTransportInput = {
+      mode: "train",
+      transport_number: option.transport_number ?? null,
+      transport_name: option.transport_name ?? null,
+      departure_city: option.departure_city ?? null,
+      arrival_city: option.arrival_city ?? null,
+      departure_date: option.departure_date ?? null,
+      departure_time: option.departure_time ?? null,
+      arrival_date: option.arrival_date ?? null,
+      arrival_time: option.arrival_time ?? null,
+      duration: option.duration ?? null,
+      price: option.price ?? null,
+      deal_price: option.deal_price ?? null,
+      availability: option.availability ?? null,
+      route: option.route ?? null,
+    };
+
+    try {
+      const saved = await saveTransport(supabase, tripId, input);
+
+      setTransport(saved);
+
+      setFlash({
+        kind: "success",
+        text: `${MODE_LABELS.train} ${
+          option.transport_name ?? option.transport_number ?? "details"
+        } selected.`,
+      });
+    } catch (error) {
+      console.error("TRANSPORT SELECT SAVE ERROR:", error);
+
+      setTransportError("Could not save the selected train.");
+    } finally {
+      setTransportSaving(false);
+    }
+  }
+
   async function handleRemoveTransport() {
     if (!tripId) {
       return;
@@ -821,10 +959,9 @@ export default function JourneySetupScreen() {
       return;
     }
 
-    router.push({
-      pathname: "../live-journey",
-      params: { tripId },
-    });
+    // The journey now flows into the LIVE TRIPS home (spec section 27):
+    // the just-created trip appears instantly on the Live Trips tab.
+    router.navigate("/(root)/(tabs)/live-trips");
   }
 
   const blocked =
@@ -1222,8 +1359,16 @@ export default function JourneySetupScreen() {
           </View>
         )}
 
-        {transportAvailability?.available &&
-        transportAvailability.results.length > 0 ? (
+        {activeMode === "train" && transportSearching ? (
+          <View style={styles.comingSoonCard}>
+            <ActivityIndicator size="small" color="#6B7280" />
+            <Text style={styles.comingSoonTitle}>Searching trains...</Text>
+            <Text style={styles.comingSoonText}>
+              Checking the railway enquiry service for your route.
+            </Text>
+          </View>
+        ) : transportAvailability?.available &&
+          transportAvailability.results.length > 0 ? (
           transportAvailability.results.map((option, index) => (
             <View key={`option-${index}`} style={styles.optionCard}>
               <View style={styles.optionHeader}>
@@ -1258,36 +1403,50 @@ export default function JourneySetupScreen() {
                     : "Not available"}
                 </Text>
                 <Text style={styles.optionMeta}>
-                  {option.availability ?? "Availability unknown"}
+                  Arrives {option.arrival_time ?? "Not available"}
+                  {option.duration ? ` (${option.duration})` : ""}
                 </Text>
               </View>
+              {option.availability ? (
+                <View style={styles.optionMetaRow}>
+                  <Text style={styles.optionMeta}>
+                    {option.availability}
+                  </Text>
+                </View>
+              ) : null}
 
               <Pressable
                 accessibilityRole="button"
-                onPress={() => {
-                  if (option.mode !== "unknown") {
-                    setActiveMode(option.mode);
-                  }
-                }}
+                disabled={transportSaving}
+                onPress={() => handleSelectTransportOption(option)}
                 style={({ pressed }) => [
                   styles.optionButton,
                   pressed && styles.optionButtonPressed,
                 ]}
               >
-                <Text style={styles.optionButtonText}>Select</Text>
+                <Text style={styles.optionButtonText}>
+                  {transportSaving ? "Saving..." : "Select"}
+                </Text>
               </Pressable>
             </View>
           ))
         ) : (
           <View style={styles.comingSoonCard}>
-            <Ionicons name="flask-outline" size={22} color="#6B7280" />
+            <Ionicons
+              name={activeMode === "train" ? "train-outline" : "flask-outline"}
+              size={22}
+              color="#6B7280"
+            />
             <Text style={styles.comingSoonTitle}>
-              {MODE_LABELS[activeMode]} options are coming soon
+              {activeMode === "train"
+                ? "No train options right now"
+                : `${MODE_LABELS[activeMode]} options are coming soon`}
             </Text>
             <Text style={styles.comingSoonText}>
-              Live train, bus and flight APIs are not available yet, so
-              schedules and prices cannot be shown here. You can still add
-              your travel details manually below.
+              {activeMode === "train"
+                ? (transportAvailability?.message ??
+                  "No live train results could be loaded.")
+                : "Live bus, flight and cab APIs are not available yet, so schedules and prices cannot be shown here. You can still add your travel details manually below."}
             </Text>
 
             <Pressable
@@ -1309,7 +1468,8 @@ export default function JourneySetupScreen() {
         {/* Stops */}
         <Text style={styles.sectionTitle}>Journey Stops</Text>
         <Text style={styles.sectionSubtitle}>
-          Add the cities your journey will pass through.
+          Add cities along your current route — only stops on the way are
+          allowed.
         </Text>
 
         <View style={styles.card}>
@@ -1584,9 +1744,10 @@ export default function JourneySetupScreen() {
       {/* City search for intermediate stops */}
       <CitySearchSheet
         visible={stopSheetVisible}
-        title="Add an intermediate stop"
+        title="Add a stop along your route"
         onClose={() => setStopSheetVisible(false)}
         onSelect={handleAddStop}
+        validate={validateCandidate}
       />
 
       {/* Manual transport entry */}

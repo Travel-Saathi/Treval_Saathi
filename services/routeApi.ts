@@ -293,3 +293,189 @@ export async function resolveCityCoordinates(
 
   return resolved;
 }
+
+/* --------------------------------------------------
+   Route-aware stop validation
+-------------------------------------------------- */
+
+const EARTH_RADIUS_KM = 6371;
+const DEG_TO_RAD = Math.PI / 180;
+
+/**
+ * Corridor width around the existing route that counts as "on the route".
+ * Tuned for MVP (Gwalior-scale detours should still be addable even though
+ * the city sits a few km off the exact road line).
+ */
+export const ROUTE_STOP_TOLERANCE_KM = 35;
+
+function haversineKm(a: RoutePoint, b: RoutePoint): number {
+  const dLat = (b.latitude - a.latitude) * DEG_TO_RAD;
+  const dLon = (b.longitude - a.longitude) * DEG_TO_RAD;
+
+  const y =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.latitude * DEG_TO_RAD) *
+      Math.cos(b.latitude * DEG_TO_RAD) *
+      Math.sin(dLon / 2) ** 2;
+
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(y));
+}
+
+/**
+ * Closest distance from `point` to the segment `[a, b]`.
+ * Uses an equirectangular projection around the point so the nearest
+ * projection is stable, then returns a true great-circle distance.
+ */
+function pointSegmentDistanceKm(
+  point: RoutePoint,
+  a: RoutePoint,
+  b: RoutePoint
+): { t: number; distanceKm: number } {
+  const cosFactor = Math.max(Math.cos(point.latitude * DEG_TO_RAD), 0.01);
+
+  const ax = a.longitude * cosFactor;
+  const ay = a.latitude;
+  const bx = b.longitude * cosFactor;
+  const by = b.latitude;
+  const px = point.longitude * cosFactor;
+  const py = point.latitude;
+
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+
+  let t = 0;
+
+  if (lengthSquared > 0) {
+    t = ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
+    t = Math.max(0, Math.min(1, t));
+  }
+
+  return {
+    t,
+    distanceKm: haversineKm(point, {
+      latitude: a.latitude + t * (b.latitude - a.latitude),
+      longitude: a.longitude + t * (b.longitude - a.longitude),
+    }),
+  };
+}
+
+export type StopRouteValidationCode =
+  | "ok"
+  | "no-geometry"
+  | "before-source"
+  | "after-destination"
+  | "too-far";
+
+export interface StopRouteValidation {
+  valid: boolean;
+  code: StopRouteValidationCode;
+  /** Distance from the candidate to the nearest route segment, in km. */
+  distanceKm: number | null;
+  /**
+   * 0 = source, 1 = destination. Used to place the stop in the correct
+   * position along the route (stop_order).
+   */
+  fraction: number | null;
+}
+
+const FRACTION_MARGIN = 0.001;
+
+/**
+ * Validate whether a geocoded candidate stop lies inside the existing
+ * route corridor (nearest distance <= `toleranceKm`) AND between the
+ * source and destination along the route progression.
+ *
+ * This is geometry-only: it never builds a new route. Callers reuse the
+ * already-calculated route geometry, so validation is cheap and never
+ * triggers an extra routing request per keystroke.
+ */
+export function validateStopAgainstRoute(
+  point: RoutePoint,
+  routeCoordinates: RoutePoint[],
+  toleranceKm: number = ROUTE_STOP_TOLERANCE_KM
+): StopRouteValidation {
+  if (!Array.isArray(routeCoordinates) || routeCoordinates.length < 2) {
+    return {
+      valid: false,
+      code: "no-geometry",
+      distanceKm: null,
+      fraction: null,
+    };
+  }
+
+  const segmentKm: number[] = [];
+
+  let totalKm = 0;
+
+  for (let i = 0; i + 1 < routeCoordinates.length; i += 1) {
+    const km = haversineKm(routeCoordinates[i], routeCoordinates[i + 1]);
+    segmentKm.push(km);
+    totalKm += km;
+  }
+
+  let best = { distanceKm: Infinity, t: 0, segmentIndex: 0, prefixKm: 0 };
+  let prefixKm = 0;
+
+  for (let i = 0; i < segmentKm.length; i += 1) {
+    const { t, distanceKm } = pointSegmentDistanceKm(
+      point,
+      routeCoordinates[i],
+      routeCoordinates[i + 1]
+    );
+
+    if (distanceKm < best.distanceKm) {
+      best = { distanceKm, t, segmentIndex: i, prefixKm };
+    }
+
+    prefixKm += segmentKm[i];
+  }
+
+  const fraction =
+    totalKm > 0
+      ? (best.prefixKm + best.t * segmentKm[best.segmentIndex]) / totalKm
+      : null;
+
+  if (fraction === null || !Number.isFinite(fraction)) {
+    return {
+      valid: false,
+      code: "no-geometry",
+      distanceKm: best.distanceKm,
+      fraction: null,
+    };
+  }
+
+  if (fraction <= FRACTION_MARGIN) {
+    return {
+      valid: false,
+      code: "before-source",
+      distanceKm: best.distanceKm,
+      fraction,
+    };
+  }
+
+  if (fraction >= 1 - FRACTION_MARGIN) {
+    return {
+      valid: false,
+      code: "after-destination",
+      distanceKm: best.distanceKm,
+      fraction,
+    };
+  }
+
+  if (best.distanceKm > toleranceKm) {
+    return {
+      valid: false,
+      code: "too-far",
+      distanceKm: best.distanceKm,
+      fraction,
+    };
+  }
+
+  return {
+    valid: true,
+    code: "ok",
+    distanceKm: best.distanceKm,
+    fraction,
+  };
+}

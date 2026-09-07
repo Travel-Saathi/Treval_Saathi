@@ -21,6 +21,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use("/api/routing", require("./routes/routing"));
+app.use("/api/railway", require("./routes/railway"));
 
 const PORT = process.env.PORT || 5000;
 

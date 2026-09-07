@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     FlatList,
-    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -276,7 +275,9 @@ export default function ExploreScreen() {
   const [activeView, setActiveView] = useState<"list" | "map">("list");
   const [selectedPlace, setSelectedPlace] =
     useState<TravelPlace | null>(null);
-  const supportsMap = Platform.OS !== "web";
+  // Map view is available on both native (react-native-maps) and web
+  // (PlaceMap.web.tsx, an OpenStreetMap based renderer).
+  const supportsMap = true;
   const listRef = useRef<FlatList<TravelPlace>>(null);
 
   useEffect(() => {

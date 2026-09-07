@@ -1,11 +1,13 @@
+import { API_BASE_URL } from "./locationApi";
+
 /**
  * Transport search abstraction for Journey Setup.
  *
- * The app currently has no live train/bus/flight API. `searchTransportOptions`
- * therefore never returns fabricated results: it reports the mode as
- * `available: false` with a "coming soon" message so the UI stays truthful
- * and ready. When a real provider is wired up, map its response through
- * `normalizeTransportOption` into the shared TransportOption shape below.
+ * `searchTransportOptions` returns live train results from the backend
+ * (`/api/railway/search`, backed by mNTES). Bus/flight/cab have no provider
+ * yet and report `available: false` with a truthful "coming soon" message.
+ * Every provider response is mapped through `normalizeTransportOption` into
+ * the shared TransportOption shape below.
  */
 
 export type TransportMode =
@@ -188,24 +190,140 @@ export function normalizeTransportOption(
   };
 }
 
+function titleCaseStationName(name: string): string {
+  return name
+    .toLowerCase()
+    .split(/\s+/)
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
+}
+
+interface TrainSearchResult {
+  success: boolean;
+  source: string;
+  from: { code: string; name: string };
+  to: { code: string; name: string };
+  date: string;
+  count: number;
+  trains: Array<{
+    number: string;
+    name: string;
+    from: { code: string; name: string };
+    to: { code: string; name: string };
+    departure: string;
+    arrival: string;
+    duration: string;
+    runningDays: string[];
+    isDaily: boolean;
+  }>;
+}
+
 /**
  * Search for transport options for the given mode.
  *
- * No live provider is wired up yet, so this always returns the truthful
- * `available: false` result. The signature stays stable so a real provider
- * can be added without changing callers.
+ * Train mode queries the backend's between-stations search (mNTES-backed).
+ * Other modes have no live provider and return a truthful "coming soon"
+ * result. The signature is stable so more providers can be added later.
  */
 export async function searchTransportOptions(
   mode: TransportMode,
-  _input: TransportSearchInput,
-  _signal?: AbortSignal
+  input: TransportSearchInput,
+  signal?: AbortSignal
 ): Promise<TransportAvailability> {
-  return {
-    mode,
-    available: false,
-    message: COMING_SOON_MESSAGES[mode],
-    results: [],
-  };
+  if (mode !== "train") {
+    return {
+      mode,
+      available: false,
+      message: COMING_SOON_MESSAGES[mode],
+      results: [],
+    };
+  }
+
+  const params = new URLSearchParams({
+    from: input.source,
+    to: input.destination,
+  });
+
+  if (input.date) {
+    params.set("date", input.date);
+  }
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/railway/search?${params.toString()}`,
+      { signal }
+    );
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const serverMessage =
+        body && body.error && typeof body.error.message === "string"
+          ? body.error.message
+          : null;
+
+      return {
+        mode,
+        available: false,
+        message: serverMessage || "Train search could not be completed.",
+        results: [],
+      };
+    }
+
+    const data = (await response.json()) as TrainSearchResult;
+
+    if (!data || data.count < 1) {
+      return {
+        mode,
+        available: false,
+        message: "No trains found on this route.",
+        results: [],
+      };
+    }
+
+    const results: TransportOption[] = data.trains.map((train) => {
+      const rawExtra: Record<string, unknown> = { ...train };
+
+      delete rawExtra.duration;
+
+      return normalizeTransportOption("train", {
+        ...rawExtra,
+        transport_number: train.number,
+        transport_name: train.name,
+        departure_city: titleCaseStationName(
+          train.from?.name || data.from?.name || ""
+        ),
+        arrival_city: titleCaseStationName(
+          train.to?.name || data.to?.name || ""
+        ),
+        departure_date: data.date,
+        departure_time: train.departure,
+        arrival_time: train.arrival,
+        duration: train.duration,
+        availability: train.isDaily
+          ? "Daily"
+          : train.runningDays?.join(", "),
+        route: `${data.from?.name} - ${data.to?.name}`,
+      });
+    });
+
+    return {
+      mode,
+      available: true,
+      message: null,
+      results,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw error;
+    }
+
+    return {
+      mode,
+      available: false,
+      message: "Unable to reach train search right now.",
+      results: [],
+    };
+  }
 }
 
 export { MODE_LABELS };

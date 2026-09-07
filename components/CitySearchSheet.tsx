@@ -21,11 +21,27 @@ export interface CitySelection {
   longitude: number;
 }
 
+/**
+ * Optional validator used on each search result.
+ * Return `null` when the location is acceptable (e.g. "on your route"),
+ * otherwise return a short human-readable reason (e.g. "Mumbai isn't
+ * along your current route.").
+ */
+export type CitySelectionValidator = (
+  location: CitySelection
+) => Promise<string | null>;
+
 interface CitySearchSheetProps {
   visible: boolean;
   title: string;
   onClose: () => void;
   onSelect: (location: CitySelection) => void;
+  validate?: CitySelectionValidator;
+}
+
+interface ValidationRecord {
+  ok: boolean;
+  reason: string | null;
 }
 
 /**
@@ -33,25 +49,34 @@ interface CitySearchSheetProps {
  *
  * Mirrors the search used elsewhere in the app: debounced search
  * against the existing location service with request cancellation.
+ * When a `validate` prop is provided, every result row is checked and
+ * annotated ("On your route" / reason), and invalid rows cannot be
+ * selected.
  */
 export default function CitySearchSheet({
   visible,
   title,
   onClose,
   onSelect,
+  validate,
 }: CitySearchSheetProps) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CitySelection[]>([]);
   const [loading, setLoading] = useState(false);
+  const [validationRecords, setValidationRecords] = useState<
+    Record<string, ValidationRecord>
+  >({});
 
   const requestIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const validationRunRef = useRef(0);
 
   useEffect(() => {
     if (!visible) {
       setSearch("");
       setResults([]);
       setLoading(false);
+      setValidationRecords({});
 
       abortRef.current?.abort();
       abortRef.current = null;
@@ -120,6 +145,46 @@ export default function CitySearchSheet({
       clearTimeout(timer);
     };
   }, [visible, search]);
+
+  // Validate every fresh result row against the optional validator.
+  useEffect(() => {
+    if (!visible || !validate) {
+      return;
+    }
+
+    const run = ++validationRunRef.current;
+
+    setValidationRecords({});
+
+    for (const item of results) {
+      validate(item)
+        .then((reason) => {
+          if (run !== validationRunRef.current) {
+            return;
+          }
+
+          setValidationRecords((current) => ({
+            ...current,
+            [item.id]: { ok: reason === null, reason },
+          }));
+        })
+        .catch((error: unknown) => {
+          console.error("STOP VALIDATION ERROR:", error);
+
+          if (run !== validationRunRef.current) {
+            return;
+          }
+
+          setValidationRecords((current) => ({
+            ...current,
+            [item.id]: {
+              ok: false,
+              reason: "Could not verify this location against your route.",
+            },
+          }));
+        });
+    }
+  }, [visible, results, validate]);
 
   function handleClose() {
     abortRef.current?.abort();
@@ -220,29 +285,85 @@ export default function CitySearchSheet({
                     : "No cities found. Try another search."}
                 </Text>
               }
-              renderItem={({ item }) => (
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => handleSelect(item)}
-                  style={({ pressed }) => [
-                    styles.result,
-                    pressed && styles.resultPressed,
-                  ]}
-                >
-                  <View style={styles.resultIcon}>
-                    <Ionicons name="location" size={20} color="#00BC26" />
-                  </View>
+              renderItem={({ item }) => {
+                const record = validationRecords[item.id];
+                const pending = Boolean(validate) && !record;
+                const ok = !validate || (record ? record.ok : false);
+                const reason = record ? record.reason : null;
 
-                  <View style={styles.resultBody}>
-                    <Text style={styles.resultName}>{item.name}</Text>
-                    <Text style={styles.resultAddress} numberOfLines={2}>
-                      {item.formatted}
-                    </Text>
-                  </View>
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !ok }}
+                    disabled={!ok}
+                    onPress={() => handleSelect(item)}
+                    style={({ pressed }) => [
+                      styles.result,
+                      !ok && styles.resultDisabled,
+                      pressed && ok && styles.resultPressed,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.resultIcon,
+                        !ok && styles.resultIconDisabled,
+                      ]}
+                    >
+                      <Ionicons
+                        name={ok ? "location" : "close"}
+                        size={20}
+                        color={ok ? "#00BC26" : "#9CA1A9"}
+                      />
+                    </View>
 
-                  <Ionicons name="chevron-forward" size={18} color="#C3C7CD" />
-                </Pressable>
-              )}
+                    <View style={styles.resultBody}>
+                      <Text style={styles.resultName}>{item.name}</Text>
+
+                      <Text style={styles.resultAddress} numberOfLines={2}>
+                        {item.formatted}
+                      </Text>
+
+                      {validate ? (
+                        pending ? (
+                          <View style={styles.validationBadge}>
+                            <ActivityIndicator
+                              size="small"
+                              color="#6B7280"
+                            />
+                            <Text style={styles.validationPending}>
+                              Checking your route...
+                            </Text>
+                          </View>
+                        ) : ok ? (
+                          <View style={styles.validationBadge}>
+                            <Ionicons
+                              name="checkmark-circle"
+                              size={14}
+                              color="#08751F"
+                            />
+                            <Text style={styles.validationOk}>
+                              On your route
+                            </Text>
+                          </View>
+                        ) : (
+                          <View style={styles.validationBadge}>
+                            <Ionicons
+                              name="alert-circle"
+                              size={14}
+                              color="#B42318"
+                            />
+                            <Text style={styles.validationNo}>
+                              {reason ?? "Not on your route"}
+                            </Text>
+                          </View>
+                        )
+                      ) : null}
+                    </View>
+
+                    <Ionicons name="chevron-forward" size={18} color="#C3C7CD" />
+                  </Pressable>
+                );
+              }}
             />
           )}
         </View>
@@ -372,6 +493,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
 
+  resultDisabled: {
+    opacity: 0.65,
+  },
+
   resultIcon: {
     width: 40,
     height: 40,
@@ -380,6 +505,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
+  },
+
+  resultIconDisabled: {
+    backgroundColor: "#F0F1F3",
   },
 
   resultBody: {
@@ -397,5 +526,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     color: "#6B7280",
+  },
+
+  validationBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 6,
+  },
+
+  validationPending: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#6B7280",
+  },
+
+  validationOk: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#08751F",
+  },
+
+  validationNo: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#B42318",
+    flexShrink: 1,
   },
 });
