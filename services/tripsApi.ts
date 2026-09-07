@@ -88,6 +88,16 @@ export interface SaveTransportInput {
   route?: string | null;
 }
 
+/**
+ * Identifies a single train leg (e.g. "Bhopal → Indore") inside a
+ * multi-stop journey. Legs are stored as separate trip_transport rows,
+ * matched by their departure/arrival cities.
+ */
+export interface TransportLegKey {
+  from: string;
+  to: string;
+}
+
 const TRIP_COLUMNS =
   "id, created_by, title, source_city, destination, description, start_date, end_date, budget, members, status, created_at";
 
@@ -367,6 +377,184 @@ export async function removeTransport(
     .from("trip_transport")
     .delete()
     .eq("trip_id", tripId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+/* --------------------------------------------------
+   Multi-leg transport (trip_transport, one row per leg)
+-------------------------------------------------- */
+
+/**
+ * List every saved transport row for a trip in insertion order.
+ * Journey legs each keep their own row so every leg stays identifiable.
+ */
+export async function listTransport(
+  supabase: SupabaseClient,
+  tripId: string
+): Promise<TripTransport[]> {
+  const { data, error } = await supabase
+    .from("trip_transport")
+    .select(TRANSPORT_COLUMNS)
+    .eq("trip_id", tripId)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(50);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data as TripTransport[]) ?? [];
+}
+
+function normalizedName(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function buildTransportPayload(input: SaveTransportInput, tripId: string) {
+  return {
+    trip_id: tripId,
+    mode: input.mode,
+    transport_number: input.transport_number ?? null,
+    transport_name: input.transport_name ?? null,
+    departure_city: input.departure_city ?? null,
+    arrival_city: input.arrival_city ?? null,
+    departure_date: input.departure_date ?? null,
+    departure_time: input.departure_time ?? null,
+    arrival_date: input.arrival_date ?? null,
+    arrival_time: input.arrival_time ?? null,
+    duration: input.duration ?? null,
+    price: input.price ?? null,
+    deal_price: input.deal_price ?? null,
+    availability: input.availability ?? null,
+    route: input.route ?? null,
+  };
+}
+
+/**
+ * Upsert the transport row owned by ONE journey leg. Other legs' rows are
+ * left untouched so a multi-leg trip can hold several transport selections.
+ * The leg identity is the pair of departure/arrival cities.
+ */
+export async function saveLegTransport(
+  supabase: SupabaseClient,
+  tripId: string,
+  input: SaveTransportInput,
+  leg: TransportLegKey
+): Promise<TripTransport> {
+  const from = normalizedName(leg.from);
+  const to = normalizedName(leg.to);
+
+  const { data: rows, error: loadError } = await supabase
+    .from("trip_transport")
+    .select(TRANSPORT_COLUMNS)
+    .eq("trip_id", tripId)
+    .limit(50);
+
+  if (loadError) {
+    throw loadError;
+  }
+
+  const legRows = ((rows as TripTransport[]) ?? []).filter(
+    (row) =>
+      normalizedName(row.departure_city) === from &&
+      normalizedName(row.arrival_city) === to
+  );
+
+  const payload = buildTransportPayload(input, tripId);
+
+  let savedId: string;
+
+  if (legRows.length === 0) {
+    const { data, error } = await supabase
+      .from("trip_transport")
+      .insert(payload)
+      .select(TRANSPORT_COLUMNS)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    savedId = (data as TripTransport).id;
+  } else {
+    const { data, error } = await supabase
+      .from("trip_transport")
+      .update(payload)
+      .eq("id", legRows[0].id)
+      .select(TRANSPORT_COLUMNS)
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    savedId = (data as TripTransport).id;
+
+    const duplicates = legRows.slice(1);
+
+    for (const duplicate of duplicates) {
+      await supabase
+        .from("trip_transport")
+        .delete()
+        .eq("id", duplicate.id);
+    }
+  }
+
+  const { data: saved, error: refetchError } = await supabase
+    .from("trip_transport")
+    .select(TRANSPORT_COLUMNS)
+    .eq("id", savedId)
+    .single();
+
+  if (refetchError) {
+    throw refetchError;
+  }
+
+  return saved as TripTransport;
+}
+
+/**
+ * Remove the transport row owned by ONE journey leg, leaving remaining
+ * legs' transports untouched.
+ */
+export async function removeTransportLeg(
+  supabase: SupabaseClient,
+  tripId: string,
+  leg: TransportLegKey
+): Promise<void> {
+  const from = normalizedName(leg.from);
+  const to = normalizedName(leg.to);
+
+  const { data: rows, error: loadError } = await supabase
+    .from("trip_transport")
+    .select("id, departure_city, arrival_city")
+    .eq("trip_id", tripId)
+    .limit(50);
+
+  if (loadError) {
+    throw loadError;
+  }
+
+  const legRowIds = ((rows as TripTransport[]) ?? [])
+    .filter(
+      (row) =>
+        normalizedName(row.departure_city) === from &&
+        normalizedName(row.arrival_city) === to
+    )
+    .map((row) => row.id);
+
+  if (legRowIds.length === 0) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("trip_transport")
+    .delete()
+    .in("id", legRowIds);
 
   if (error) {
     throw error;

@@ -37,6 +37,17 @@ interface CitySearchSheetProps {
   onClose: () => void;
   onSelect: (location: CitySelection) => void;
   validate?: CitySelectionValidator;
+  /**
+   * Optional smart suggestions shown when the search box is empty.
+   * Expected to be generated dynamically (route-corridor aware), never
+   * a hardcoded list of cities.
+   */
+  recommendations?: CitySelection[];
+  /**
+   * When true, off-route results stay selectable and are annotated with a
+   * warning instead of being locked. Defaults to false (blocking behavior).
+   */
+  allowOffRouteSelect?: boolean;
 }
 
 interface ValidationRecord {
@@ -59,6 +70,8 @@ export default function CitySearchSheet({
   onClose,
   onSelect,
   validate,
+  recommendations = [],
+  allowOffRouteSelect = false,
 }: CitySearchSheetProps) {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CitySelection[]>([]);
@@ -196,6 +209,11 @@ export default function CitySearchSheet({
     onSelect(location);
   }
 
+  const showRecommendations =
+    visible &&
+    search.trim().length < 2 &&
+    recommendations.length > 0;
+
   return (
     <Modal
       visible={visible}
@@ -278,10 +296,80 @@ export default function CitySearchSheet({
               showsVerticalScrollIndicator={false}
               style={styles.list}
               contentContainerStyle={styles.listContent}
+              ListHeaderComponent={
+                showRecommendations ? (
+                  <View style={styles.recommendationsBlock}>
+                    <Text style={styles.recommendationsTitle}>
+                      Recommended Stops Along Your Route
+                    </Text>
+
+                    {recommendations.map((item) => (
+                      <Pressable
+                        key={item.id}
+                        accessibilityRole="button"
+                        onPress={() => handleSelect(item)}
+                        style={({ pressed }) => [
+                          styles.result,
+                          pressed && styles.resultPressed,
+                        ]}
+                      >
+                        <View style={styles.recommendationIcon}>
+                          <Ionicons
+                            name="star"
+                            size={18}
+                            color="#B45309"
+                          />
+                        </View>
+
+                        <View style={styles.resultBody}>
+                          <Text style={styles.resultName}>{item.name}</Text>
+
+                          <Text
+                            style={styles.resultAddress}
+                            numberOfLines={2}
+                          >
+                            {item.formatted}
+                          </Text>
+
+                          <View style={styles.validationBadge}>
+                            <Ionicons
+                              name="checkmark-circle"
+                              size={14}
+                              color="#08751F"
+                            />
+                            <Text style={styles.validationOk}>
+                              On your route
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Ionicons
+                          name="chevron-forward"
+                          size={18}
+                          color="#C3C7CD"
+                        />
+                      </Pressable>
+                    ))}
+
+                    <View style={styles.searchAnotherRow}>
+                      <Ionicons
+                        name="search-outline"
+                        size={16}
+                        color="#6B7280"
+                      />
+                      <Text style={styles.searchAnotherText}>
+                        Search another city
+                      </Text>
+                    </View>
+                  </View>
+                ) : null
+              }
               ListEmptyComponent={
                 <Text style={styles.empty}>
                   {search.trim().length < 2
-                    ? "Start typing to find a city or place."
+                    ? showRecommendations
+                      ? "Or type to find any city or place."
+                      : "Start typing to find a city or place."
                     : "No cities found. Try another search."}
                 </Text>
               }
@@ -290,17 +378,18 @@ export default function CitySearchSheet({
                 const pending = Boolean(validate) && !record;
                 const ok = !validate || (record ? record.ok : false);
                 const reason = record ? record.reason : null;
+                const locked = !ok && !allowOffRouteSelect;
 
                 return (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityState={{ disabled: !ok }}
-                    disabled={!ok}
+                    accessibilityState={{ disabled: locked }}
+                    disabled={locked}
                     onPress={() => handleSelect(item)}
                     style={({ pressed }) => [
                       styles.result,
-                      !ok && styles.resultDisabled,
-                      pressed && ok && styles.resultPressed,
+                      locked && styles.resultDisabled,
+                      pressed && !locked && styles.resultPressed,
                     ]}
                   >
                     <View
@@ -310,9 +399,21 @@ export default function CitySearchSheet({
                       ]}
                     >
                       <Ionicons
-                        name={ok ? "location" : "close"}
+                        name={
+                          ok
+                            ? "location"
+                            : allowOffRouteSelect
+                              ? "warning-outline"
+                              : "close"
+                        }
                         size={20}
-                        color={ok ? "#00BC26" : "#9CA1A9"}
+                        color={
+                          ok
+                            ? "#00BC26"
+                            : allowOffRouteSelect
+                              ? "#B45309"
+                              : "#9CA1A9"
+                        }
                       />
                     </View>
 
@@ -545,6 +646,44 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "#08751F",
+  },
+
+  recommendationsBlock: {
+    marginBottom: 8,
+  },
+
+  recommendationsTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#1C1C1E",
+    marginBottom: 10,
+  },
+
+  recommendationIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#FEF3C7",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+
+  searchAnotherRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    marginTop: 2,
+    borderTopWidth: 1,
+    borderTopColor: "#F0F1F3",
+  },
+
+  searchAnotherText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#6B7280",
   },
 
   validationNo: {

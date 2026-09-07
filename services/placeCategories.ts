@@ -19,6 +19,14 @@ export const GEOAPIFY_CATEGORY_MAP: Record<string, string> = {
   "car-service": "service.vehicle.repair.car",
   grocery: "commercial.supermarket",
   /*
+   * Settlement categories let the app discover cities/towns/villages near
+   * a point (used to recommend intermediate stops along a driving route).
+   * "settlement.*" is a documented Geoapify Places category family.
+   */
+  city: "settlement.city",
+  town: "settlement.town",
+  village: "settlement.village",
+  /*
    * TODO VERIFY:
    * "rest-stop" has NO confirmed Geoapify category yet.
    * "highway.rest_area" was tested against the live API and

@@ -23,6 +23,7 @@ import PlaceMap, {
   type PlaceMapRegion,
 } from "../../components/PlaceMap";
 import { useSupabase } from "../../hook/usesupabase";
+import { getRecommendedStopsAlongRoute } from "../../services/placesApi";
 import {
   getJourneyRoute,
   resolveCityCoordinates,
@@ -32,12 +33,12 @@ import {
 import {
   type TripStop,
   type TripTransport,
-  getTransport,
   listStops,
+  listTransport,
   removeStop,
-  removeTransport,
+  removeTransportLeg,
+  saveLegTransport,
   saveStopOrder,
-  saveTransport,
   addStop as addStopRow,
   type SaveTransportInput,
 } from "../../services/tripsApi";
@@ -117,6 +118,33 @@ function formatKilometers(kilometers: number | null): string {
   }
 
   return `${kilometers.toFixed(1)} km`;
+}
+
+interface JourneyLeg {
+  from: string;
+  to: string;
+}
+
+/** Canonical, case-insensitive key that identifies one journey leg. */
+function legKey(leg: { from: string; to: string }): string {
+  return `${leg.from.trim().toLowerCase()}|${leg.to.trim().toLowerCase()}`;
+}
+
+/** Find the saved transport row owned by a specific journey leg. */
+function findSavedTransport(
+  rows: TripTransport[],
+  leg: JourneyLeg
+): TripTransport | null {
+  const from = leg.from.trim().toLowerCase();
+  const to = leg.to.trim().toLowerCase();
+
+  return (
+    rows.find(
+      (row) =>
+        (row.departure_city ?? "").trim().toLowerCase() === from &&
+        (row.arrival_city ?? "").trim().toLowerCase() === to
+    ) ?? null
+  );
 }
 
 interface CityParam {
@@ -259,26 +287,40 @@ export default function JourneySetupScreen() {
   } | null>(null);
 
   const [stops, setStops] = useState<TripStop[]>([]);
-  const [transport, setTransport] = useState<TripTransport | null>(null);
+  const [savedTransports, setSavedTransports] = useState<TripTransport[]>([]);
 
   const [flash, setFlash] = useState<FlashMessage | null>(null);
 
   // Transport section
   const [activeMode, setActiveMode] = useState<TransportMode>("train");
-  const [transportAvailability, setTransportAvailability] =
-    useState<TransportAvailability | null>(null);
   const [transportModalVisible, setTransportModalVisible] = useState(false);
   const [transportDetailsVisible, setTransportDetailsVisible] =
     useState(false);
+  const [transportDetailsRow, setTransportDetailsRow] =
+    useState<TripTransport | null>(null);
   const [transportSaving, setTransportSaving] = useState(false);
   const [transportBusy, setTransportBusy] = useState(false);
-  const [transportSearching, setTransportSearching] = useState(true);
   const [transportError, setTransportError] = useState<string | null>(null);
+  const [transportEditLeg, setTransportEditLeg] =
+    useState<JourneyLeg | null>(null);
+  const [transportLegs, setTransportLegs] = useState<
+    Record<string, TransportAvailability | null>
+  >({});
+  const [transportLegLoading, setTransportLegLoading] = useState<
+    Record<string, boolean>
+  >({});
+  const [transportLegError, setTransportLegError] = useState<
+    Record<string, string>
+  >({});
   const [draft, setDraft] = useState<TransportDraft | null>(null);
 
   // Stops
   const [stopSheetVisible, setStopSheetVisible] = useState(false);
   const [busyStopId, setBusyStopId] = useState<string | null>(null);
+  const [pendingOffRouteStop, setPendingOffRouteStop] =
+    useState<CitySelection | null>(null);
+  const [recommendedStopSuggestions, setRecommendedStopSuggestions] =
+    useState<CitySelection[]>([]);
 
   // Route
   const [routeLoading, setRouteLoading] = useState(false);
@@ -330,7 +372,7 @@ export default function JourneySetupScreen() {
             .eq("id", tripId)
             .maybeSingle(),
           listStops(supabase, tripId),
-          getTransport(supabase, tripId),
+          listTransport(supabase, tripId),
         ]);
 
         if (cancelled) {
@@ -345,7 +387,7 @@ export default function JourneySetupScreen() {
 
         setTrip(tripData.data);
         setStops(stopData);
-        setTransport(transportData);
+        setSavedTransports(transportData);
         setLoadState("ready");
       } catch (error) {
         console.error("JOURNEY LOAD ERROR:", error);
@@ -363,39 +405,56 @@ export default function JourneySetupScreen() {
     };
   }, [tripId, supabase, reloadKey]);
 
-  // Transport availability for the active mode (no live API yet).
-  useEffect(() => {
-    let cancelled = false;
-
-    if (loadState !== "ready" || !trip) {
-      return;
+  // Journey legs: source -> each stop in order -> destination. Each
+  // consecutive city pair is a separate train-searchable leg.
+  const journeyLegs = useMemo<JourneyLeg[]>(() => {
+    if (!trip) {
+      return [];
     }
 
-    searchTransportOptions(activeMode, {
-      source: trip.source_city ?? "",
-      destination: trip.destination ?? "",
-      date: trip.start_date,
-    }).then((result) => {
-      if (!cancelled) {
-        setTransportAvailability(result);
-        setTransportSearching(false);
+    const cities: string[] = [
+      trip.source_city?.trim() ?? "",
+      ...stops.map((stop) => stop.city.trim()),
+      trip.destination?.trim() ?? "",
+    ].filter(Boolean);
+
+    const deduped: string[] = [];
+
+    for (const city of cities) {
+      const last = deduped[deduped.length - 1];
+
+      if (!last || last.toLowerCase() !== city.toLowerCase()) {
+        deduped.push(city);
       }
-    });
-
-    if (activeMode === "train") {
-      setTransportSearching(true);
     }
 
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMode, loadState, trip?.id, trip?.source_city, trip?.destination, trip?.start_date]);
+    const legs: JourneyLeg[] = [];
+
+    for (let index = 0; index + 1 < deduped.length; index += 1) {
+      legs.push({ from: deduped[index], to: deduped[index + 1] });
+    }
+
+    return legs;
+  }, [trip, stops]);
 
   // Route calculation using source + stops + destination.
   const stopsKey = useMemo(
     () => stops.map((stop) => `${stop.id}:${stop.stop_order}`).join("|"),
     [stops]
   );
+
+  // Trains are only searched after the user presses "Find trains".
+  // Results always reflect the CURRENT stop order: whenever the journey
+  // changes (stop added/removed/reordered), old results are invalidated.
+  useEffect(() => {
+    if (loadState !== "ready") {
+      return;
+    }
+
+    setTransportLegs({});
+    setTransportLegError({});
+    setTransportLegLoading({});
+  }, [loadState, stopsKey]);
 
   useEffect(() => {
     if (loadState !== "ready" || !trip) {
@@ -543,6 +602,60 @@ export default function JourneySetupScreen() {
     };
   }, [loadState, trip?.id, trip?.destination, destinationSeedKey]);
 
+  // Smart intermediate-stop suggestions: sampled along the CURRENT route
+  // geometry via the existing places service. Never hardcoded — refreshed
+  // each time the sheet opens or the route/stops change.
+  useEffect(() => {
+    if (
+      loadState !== "ready" ||
+      !trip ||
+      !stopSheetVisible ||
+      !routeCoordinates ||
+      routeCoordinates.length < 2
+    ) {
+      setRecommendedStopSuggestions([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const excludes = [
+      trip.source_city ?? "",
+      trip.destination ?? "",
+      ...stops.map((stop) => stop.city),
+    ]
+      .map((city) => city.trim())
+      .filter(Boolean);
+
+    getRecommendedStopsAlongRoute(routeCoordinates, { excludes })
+      .then((items) => {
+        if (cancelled) {
+          return;
+        }
+
+        setRecommendedStopSuggestions(
+          items.map((item) => ({
+            id: item.id,
+            name: item.name,
+            formatted: item.formatted,
+            latitude: item.latitude,
+            longitude: item.longitude,
+          }))
+        );
+      })
+      .catch((error: unknown) => {
+        console.error("RECOMMENDED STOPS ERROR:", error);
+
+        if (!cancelled) {
+          setRecommendedStopSuggestions([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadState, trip, stopsKey, stopSheetVisible, routeCoordinates]);
+
   /* --------------------------------------------------
      Stops
   -------------------------------------------------- */
@@ -630,9 +743,26 @@ export default function JourneySetupScreen() {
     const validation = validateStopAgainstRoute(location, coords);
 
     if (!validation.valid || validation.fraction === null) {
+      // Off-route locations are NOT rejected permanently: warn and let
+      // the user add them anyway (detour) via the confirmation modal.
+      setPendingOffRouteStop(location);
+      return;
+    }
+
+    await commitAddStop(location, validation.fraction);
+  }
+
+  async function commitAddStop(location: CitySelection, fraction: number) {
+    if (!tripId) {
+      return;
+    }
+
+    const coords = routeCoordinates;
+
+    if (!coords || coords.length < 2) {
       setFlash({
         kind: "error",
-        text: `${location.name} isn't along your current route.`,
+        text: "Route information is unavailable. Please try again.",
       });
       return;
     }
@@ -663,9 +793,12 @@ export default function JourneySetupScreen() {
 
       const row = await addStopRow(supabase, tripId, location.name, null, null);
 
+      // Off-route stops pass `fraction = Infinity` so they are appended
+      // AFTER the destination, never silently reordered along the way —
+      // the user's chosen order is preserved exactly.
       const ordered = [
         ...existingWithFractions,
-        { stop: row, fraction: validation.fraction },
+        { stop: row, fraction },
       ];
 
       ordered.sort((a, b) => a.fraction - b.fraction);
@@ -697,6 +830,20 @@ export default function JourneySetupScreen() {
     } finally {
       setBusyStopId(null);
     }
+  }
+
+  async function confirmAddAnyway() {
+    const stop = pendingOffRouteStop;
+
+    if (!stop) {
+      return;
+    }
+
+    setPendingOffRouteStop(null);
+    setStopSheetVisible(false);
+
+    // fraction = Infinity appends the detour stop at the end of the list.
+    await commitAddStop(stop, Number.POSITIVE_INFINITY);
   }
 
   async function handleRemoveStop(stopId: string) {
@@ -784,15 +931,38 @@ export default function JourneySetupScreen() {
      Transport
   -------------------------------------------------- */
 
-  function openTransportModal() {
+  async function refreshSavedTransports() {
+    if (!tripId) {
+      return;
+    }
+
+    const rows = await listTransport(supabase, tripId);
+
+    setSavedTransports(rows);
+  }
+
+  const transport = useMemo(() => {
+    if (savedTransports.length === 0) {
+      return null;
+    }
+
+    const modeMatch = savedTransports.find(
+      (row) => (row.mode ?? "train") === activeMode
+    );
+
+    return modeMatch ?? savedTransports[0];
+  }, [savedTransports, activeMode]);
+
+  function openTransportModal(leg?: JourneyLeg) {
     setTransportError(null);
+    setTransportEditLeg(leg ?? null);
 
     setDraft({
       mode: activeMode,
       transport_number: "",
       transport_name: "",
-      departure_city: trip?.source_city ?? "",
-      arrival_city: trip?.destination ?? "",
+      departure_city: leg?.from ?? trip?.source_city ?? "",
+      arrival_city: leg?.to ?? trip?.destination ?? "",
       departure_date: trip?.start_date ?? "",
       departure_time: "",
       arrival_date: "",
@@ -801,7 +971,7 @@ export default function JourneySetupScreen() {
       price: "",
       deal_price: "",
       availability: "",
-      route: "",
+      route: leg ? `${leg.from} - ${leg.to}` : "",
     });
 
     setTransportModalVisible(true);
@@ -855,10 +1025,22 @@ export default function JourneySetupScreen() {
     };
 
     try {
-      const saved = await saveTransport(supabase, tripId, input);
+      const from =
+        draft.departure_city.trim() || trip?.source_city?.trim() || "";
+      const to =
+        draft.arrival_city.trim() || trip?.destination?.trim() || "";
 
-      setTransport(saved);
+      await saveLegTransport(
+        supabase,
+        tripId,
+        input,
+        transportEditLeg ?? { from, to }
+      );
+
+      await refreshSavedTransports();
+
       setTransportModalVisible(false);
+      setTransportEditLeg(null);
 
       setFlash({
         kind: "success",
@@ -873,7 +1055,10 @@ export default function JourneySetupScreen() {
     }
   }
 
-  async function handleSelectTransportOption(option: TransportOption) {
+  async function handleSelectTransportOption(
+    option: TransportOption,
+    leg: JourneyLeg
+  ) {
     if (option.mode !== "train") {
       if (option.mode !== "unknown") {
         setActiveMode(option.mode);
@@ -892,8 +1077,8 @@ export default function JourneySetupScreen() {
       mode: "train",
       transport_number: option.transport_number ?? null,
       transport_name: option.transport_name ?? null,
-      departure_city: option.departure_city ?? null,
-      arrival_city: option.arrival_city ?? null,
+      departure_city: leg.from,
+      arrival_city: leg.to,
       departure_date: option.departure_date ?? null,
       departure_time: option.departure_time ?? null,
       arrival_date: option.arrival_date ?? null,
@@ -902,19 +1087,22 @@ export default function JourneySetupScreen() {
       price: option.price ?? null,
       deal_price: option.deal_price ?? null,
       availability: option.availability ?? null,
-      route: option.route ?? null,
+      route: `${leg.from} - ${leg.to}`,
     };
 
     try {
-      const saved = await saveTransport(supabase, tripId, input);
+      await saveLegTransport(
+        supabase,
+        tripId,
+        input,
+        { from: leg.from, to: leg.to }
+      );
 
-      setTransport(saved);
+      await refreshSavedTransports();
 
       setFlash({
         kind: "success",
-        text: `${MODE_LABELS.train} ${
-          option.transport_name ?? option.transport_number ?? "details"
-        } selected.`,
+        text: `Train selected for ${leg.from} -> ${leg.to}.`,
       });
     } catch (error) {
       console.error("TRANSPORT SELECT SAVE ERROR:", error);
@@ -926,16 +1114,19 @@ export default function JourneySetupScreen() {
   }
 
   async function handleRemoveTransport() {
-    if (!tripId) {
+    if (!tripId || !transport) {
       return;
     }
 
     setTransportBusy(true);
 
     try {
-      await removeTransport(supabase, tripId);
+      await removeTransportLeg(supabase, tripId, {
+        from: transport.departure_city ?? trip?.source_city ?? "",
+        to: transport.arrival_city ?? trip?.destination ?? "",
+      });
 
-      setTransport(null);
+      await refreshSavedTransports();
 
       setFlash({ kind: "success", text: "Transport removed." });
     } catch (error) {
@@ -948,6 +1139,84 @@ export default function JourneySetupScreen() {
     } finally {
       setTransportBusy(false);
     }
+  }
+
+  async function handleRemoveTransportLeg(leg: JourneyLeg) {
+    if (!tripId) {
+      return;
+    }
+
+    setTransportBusy(true);
+
+    try {
+      await removeTransportLeg(supabase, tripId, {
+        from: leg.from,
+        to: leg.to,
+      });
+
+      await refreshSavedTransports();
+
+      setFlash({
+        kind: "success",
+        text: `Transport removed for ${leg.from} -> ${leg.to}.`,
+      });
+    } catch (error) {
+      console.error("TRANSPORT LEG REMOVE ERROR:", error);
+
+      setFlash({
+        kind: "error",
+        text: "Could not remove transport.",
+      });
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function handleFindTrains() {
+    if (!trip || journeyLegs.length === 0) {
+      return;
+    }
+
+    const loading: Record<string, boolean> = {};
+
+    for (const leg of journeyLegs) {
+      loading[legKey(leg)] = true;
+    }
+
+    setTransportLegs({});
+    setTransportLegError({});
+    setTransportLegLoading(loading);
+
+    await Promise.all(
+      journeyLegs.map(async (leg) => {
+        const key = legKey(leg);
+
+        try {
+          const result = await searchTransportOptions("train", {
+            source: leg.from,
+            destination: leg.to,
+            date: trip.start_date,
+          });
+
+          setTransportLegs((current) => ({ ...current, [key]: result }));
+        } catch (error) {
+          console.error("TRANSPORT LEG SEARCH ERROR:", error);
+
+          setTransportLegError((current) => ({
+            ...current,
+            [key]:
+              error instanceof Error
+                ? error.message
+                : "Could not search this leg.",
+          }));
+        } finally {
+          setTransportLegLoading((current) => ({
+            ...current,
+            [key]: false,
+          }));
+        }
+      })
+    );
   }
 
   /* --------------------------------------------------
@@ -1233,6 +1502,319 @@ export default function JourneySetupScreen() {
           })}
         </ScrollView>
 
+        {activeMode === "train" ? (
+          <>
+            <View style={styles.findTrainCard}>
+              <Ionicons name="train-outline" size={22} color="#00BC26" />
+              <Text style={styles.findTrainTitle}>
+                {journeyLegs.length === 0
+                  ? "No journey legs to search"
+                  : `${journeyLegs.length} ${
+                      journeyLegs.length === 1 ? "leg" : "legs"
+                    } to search`}
+              </Text>
+              <Text style={styles.findTrainText}>
+                {journeyLegs.length === 0
+                  ? "Your journey needs at least a source and a destination."
+                  : journeyLegs
+                      .map(
+                        (leg, index) =>
+                          `${index + 1}. ${leg.from} \u2192 ${leg.to}`
+                      )
+                      .join("  ·  ")}
+              </Text>
+
+              <Pressable
+                accessibilityRole="button"
+                disabled={journeyLegs.length === 0}
+                onPress={handleFindTrains}
+                style={({ pressed }) => [
+                  styles.findTrainButton,
+                  pressed && styles.findTrainButtonPressed,
+                  journeyLegs.length === 0 && styles.actionDisabled,
+                ]}
+              >
+                <Ionicons name="search" size={18} color="#FFFFFF" />
+                <Text style={styles.findTrainButtonText}>Find trains</Text>
+              </Pressable>
+            </View>
+
+            {journeyLegs.map((leg, index) => {
+              const key = legKey(leg);
+              const saved = findSavedTransport(savedTransports, leg);
+              const availability = transportLegs[key] ?? null;
+              const loading = transportLegLoading[key] === true;
+              const legError = transportLegError[key] ?? null;
+
+              return (
+                <View key={key} style={styles.legSection}>
+                  <View style={styles.legHeaderRow}>
+                    <View style={styles.legHeaderDot}>
+                      <Text style={styles.legHeaderNumber}>{index + 1}</Text>
+                    </View>
+                    <Text style={styles.legHeaderTitle}>
+                      Leg {index + 1}
+                    </Text>
+                    <Text
+                      style={styles.legHeaderCities}
+                      numberOfLines={1}
+                    >
+                      {leg.from} {"\u2192"} {leg.to}
+                    </Text>
+                  </View>
+
+                  {saved ? (
+                    <View style={styles.selectedTransportCard}>
+                      <View style={styles.selectedTransportHeader}>
+                        <Ionicons name="train-outline" size={19} color="#00BC26" />
+                        <Text style={styles.selectedTransportMode}>
+                          {MODE_LABELS.train}
+                        </Text>
+                      </View>
+
+                      <Text style={styles.selectedTransportName} numberOfLines={1}>
+                        {saved.transport_name ?? "Not available"}
+                      </Text>
+
+                      {saved.transport_number && (
+                        <Text style={styles.selectedTransportNumber}>
+                          {saved.transport_number}
+                        </Text>
+                      )}
+
+                      <View style={styles.selectedTransportCities}>
+                        <Text style={styles.selectedTransportCity}>
+                          {saved.departure_city ?? "Not available"}
+                        </Text>
+                        <Ionicons name="arrow-forward" size={14} color="#B0B5BC" />
+                        <Text style={styles.selectedTransportCity}>
+                          {saved.arrival_city ?? "Not available"}
+                        </Text>
+                      </View>
+
+                      <View style={styles.selectedTransportMeta}>
+                        <Ionicons name="time-outline" size={15} color="#6B7280" />
+                        <Text style={styles.selectedTransportMetaText}>
+                          {saved.departure_time?.trim()
+                            ? `Departs ${saved.departure_time}`
+                            : "Not available"}
+                          {saved.arrival_time?.trim()
+                            ? `  ·  Arrives ${saved.arrival_time}`
+                            : ""}
+                        </Text>
+                      </View>
+
+                      <View style={styles.selectedTransportPriceRow}>
+                        <View>
+                          {saved.deal_price ? (
+                            <View style={styles.priceRowInline}>
+                              <Text style={styles.selectedTransportPrice}>
+                                ₹{saved.deal_price}
+                              </Text>
+                              {saved.price && (
+                                <Text style={styles.selectedTransportPriceOld}>
+                                  ₹{saved.price}
+                                </Text>
+                              )}
+                            </View>
+                          ) : saved.price ? (
+                            <Text style={styles.selectedTransportPrice}>
+                              ₹{saved.price}
+                            </Text>
+                          ) : (
+                            <Text style={styles.selectedTransportPriceUnavailable}>
+                              Price not available
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+
+                      {saved.availability?.trim() ? (
+                        <View style={styles.selectedTransportMeta}>
+                          <Ionicons name="information-circle-outline" size={15} color="#6B7280" />
+                          <Text style={styles.selectedTransportMetaText}>
+                            {saved.availability}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      <View style={styles.selectedTransportActions}>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => {
+                            setTransportDetailsRow(saved);
+                            setTransportDetailsVisible(true);
+                          }}
+                          style={({ pressed }) => [
+                            styles.transportActionButton,
+                            pressed && styles.transportActionButtonPressed,
+                          ]}
+                        >
+                          <Text style={styles.transportActionText}>
+                            View Details
+                          </Text>
+                        </Pressable>
+
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => openTransportModal(leg)}
+                          style={({ pressed }) => [
+                            styles.transportActionButton,
+                            pressed && styles.transportActionButtonPressed,
+                          ]}
+                        >
+                          <Text style={styles.transportActionText}>Change</Text>
+                        </Pressable>
+
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={transportBusy}
+                          onPress={() => handleRemoveTransportLeg(leg)}
+                          style={({ pressed }) => [
+                            styles.transportActionButton,
+                            styles.transportActionDanger,
+                            pressed && styles.transportActionButtonPressed,
+                            transportBusy && styles.actionDisabled,
+                          ]}
+                        >
+                          {transportBusy ? (
+                            <ActivityIndicator size="small" color="#B42318" />
+                          ) : (
+                            <Text style={styles.transportActionDangerText}>
+                              Remove
+                            </Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : loading ? (
+                    <View style={styles.comingSoonCard}>
+                      <ActivityIndicator size="small" color="#6B7280" />
+                      <Text style={styles.comingSoonTitle}>
+                        Searching trains for this leg...
+                      </Text>
+                      <Text style={styles.comingSoonText}>
+                        Checking the railway enquiry service for {leg.from} to {leg.to}.
+                      </Text>
+                    </View>
+                  ) : legError ? (
+                    <View style={styles.comingSoonCard}>
+                      <Ionicons name="alert-circle-outline" size={22} color="#B42318" />
+                      <Text style={styles.comingSoonTitle}>
+                        Could not search this leg
+                      </Text>
+                      <Text style={styles.comingSoonText}>{legError}</Text>
+                    </View>
+                  ) : availability && availability.results.length > 0 ? (
+                    availability.results.map((option, optionIndex) => (
+                      <View
+                        key={`leg-${index}-option-${optionIndex}`}
+                        style={styles.optionCard}
+                      >
+                        <View style={styles.optionHeader}>
+                          <View style={styles.optionNameBlock}>
+                            <Text style={styles.optionName} numberOfLines={1}>
+                              {option.transport_name ?? "Not available"}
+                            </Text>
+                            <Text style={styles.optionNumber}>
+                              {option.transport_number ?? "Not available"}
+                            </Text>
+                          </View>
+                          <Text style={styles.optionPrice}>
+                            {option.price != null
+                              ? `₹${option.price}`
+                              : "Not available"}
+                          </Text>
+                        </View>
+
+                        <View style={styles.optionCities}>
+                          <Text style={styles.optionCity}>
+                            {option.departure_city ?? "Not available"}
+                          </Text>
+                          <Ionicons name="arrow-forward" size={14} color="#B0B5BC" />
+                          <Text style={styles.optionCity}>
+                            {option.arrival_city ?? "Not available"}
+                          </Text>
+                        </View>
+
+                        <View style={styles.optionMetaRow}>
+                          <Text style={styles.optionMeta}>
+                            Departs{" "}
+                            {option.departure_time
+                              ? `${option.departure_date ?? ""} ${option.departure_time}`.trim()
+                              : "Not available"}
+                          </Text>
+                          <Text style={styles.optionMeta}>
+                            Arrives {option.arrival_time ?? "Not available"}
+                            {option.duration ? ` (${option.duration})` : ""}
+                          </Text>
+                        </View>
+                        {option.availability ? (
+                          <View style={styles.optionMetaRow}>
+                            <Text style={styles.optionMeta}>
+                              {option.availability}
+                            </Text>
+                          </View>
+                        ) : null}
+
+                        <Pressable
+                          accessibilityRole="button"
+                          disabled={transportSaving}
+                          onPress={() => handleSelectTransportOption(option, leg)}
+                          style={({ pressed }) => [
+                            styles.optionButton,
+                            pressed && styles.optionButtonPressed,
+                          ]}
+                        >
+                          <Text style={styles.optionButtonText}>
+                            {transportSaving ? "Saving..." : "Select"}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    ))
+                  ) : availability && !availability.available ? (
+                    <View style={styles.comingSoonCard}>
+                      <Ionicons name="train-outline" size={22} color="#6B7280" />
+                      <Text style={styles.comingSoonTitle}>
+                        No train options for this leg
+                      </Text>
+                      <Text style={styles.comingSoonText}>
+                        {availability.message ??
+                          "No live train results could be loaded."}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={styles.legEmptyHint}>
+                      <Ionicons
+                        name="arrow-up-circle-outline"
+                        size={16}
+                        color="#6B7280"
+                      />
+                      <Text style={styles.legEmptyHintText}>
+                        Press "Find trains" to see options for this leg.
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => openTransportModal()}
+              style={({ pressed }) => [
+                styles.addManualTransportLink,
+                pressed && styles.addManualTransportLinkPressed,
+              ]}
+            >
+              <Ionicons name="add-circle-outline" size={16} color="#00BC26" />
+              <Text style={styles.addManualTransportLinkText}>
+                Add transport manually
+              </Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
         {transport && (
           <View style={styles.selectedTransportCard}>
             <View style={styles.selectedTransportHeader}>
@@ -1318,7 +1900,10 @@ export default function JourneySetupScreen() {
             <View style={styles.selectedTransportActions}>
               <Pressable
                 accessibilityRole="button"
-                onPress={() => setTransportDetailsVisible(true)}
+                onPress={() => {
+                  setTransportDetailsRow(transport);
+                  setTransportDetailsVisible(true);
+                }}
                 style={({ pressed }) => [
                   styles.transportActionButton,
                   pressed && styles.transportActionButtonPressed,
@@ -1329,7 +1914,7 @@ export default function JourneySetupScreen() {
 
               <Pressable
                 accessibilityRole="button"
-                onPress={openTransportModal}
+                onPress={() => openTransportModal()}
                 style={({ pressed }) => [
                   styles.transportActionButton,
                   pressed && styles.transportActionButtonPressed,
@@ -1359,110 +1944,32 @@ export default function JourneySetupScreen() {
           </View>
         )}
 
-        {activeMode === "train" && transportSearching ? (
-          <View style={styles.comingSoonCard}>
-            <ActivityIndicator size="small" color="#6B7280" />
-            <Text style={styles.comingSoonTitle}>Searching trains...</Text>
-            <Text style={styles.comingSoonText}>
-              Checking the railway enquiry service for your route.
-            </Text>
-          </View>
-        ) : transportAvailability?.available &&
-          transportAvailability.results.length > 0 ? (
-          transportAvailability.results.map((option, index) => (
-            <View key={`option-${index}`} style={styles.optionCard}>
-              <View style={styles.optionHeader}>
-                <View style={styles.optionNameBlock}>
-                  <Text style={styles.optionName} numberOfLines={1}>
-                    {option.transport_name ?? "Not available"}
-                  </Text>
-                  <Text style={styles.optionNumber}>
-                    {option.transport_number ?? "Not available"}
-                  </Text>
-                </View>
-                <Text style={styles.optionPrice}>
-                  {option.price != null ? `₹${option.price}` : "Not available"}
-                </Text>
-              </View>
-
-              <View style={styles.optionCities}>
-                <Text style={styles.optionCity}>
-                  {option.departure_city ?? "Not available"}
-                </Text>
-                <Ionicons name="arrow-forward" size={14} color="#B0B5BC" />
-                <Text style={styles.optionCity}>
-                  {option.arrival_city ?? "Not available"}
-                </Text>
-              </View>
-
-              <View style={styles.optionMetaRow}>
-                <Text style={styles.optionMeta}>
-                  Departs{" "}
-                  {option.departure_time
-                    ? `${option.departure_date ?? ""} ${option.departure_time}`.trim()
-                    : "Not available"}
-                </Text>
-                <Text style={styles.optionMeta}>
-                  Arrives {option.arrival_time ?? "Not available"}
-                  {option.duration ? ` (${option.duration})` : ""}
-                </Text>
-              </View>
-              {option.availability ? (
-                <View style={styles.optionMetaRow}>
-                  <Text style={styles.optionMeta}>
-                    {option.availability}
-                  </Text>
-                </View>
-              ) : null}
+        <View style={styles.comingSoonCard}>
+              <Ionicons name="flask-outline" size={22} color="#6B7280" />
+              <Text style={styles.comingSoonTitle}>
+                {MODE_LABELS[activeMode]} options are coming soon
+              </Text>
+              <Text style={styles.comingSoonText}>
+                Live bus, flight and cab APIs are not available yet, so
+                schedules and prices cannot be shown here. You can still add
+                your travel details manually below.
+              </Text>
 
               <Pressable
                 accessibilityRole="button"
-                disabled={transportSaving}
-                onPress={() => handleSelectTransportOption(option)}
+                onPress={() => openTransportModal()}
                 style={({ pressed }) => [
-                  styles.optionButton,
-                  pressed && styles.optionButtonPressed,
+                  styles.addTransportButton,
+                  pressed && styles.addTransportButtonPressed,
                 ]}
               >
-                <Text style={styles.optionButtonText}>
-                  {transportSaving ? "Saving..." : "Select"}
+                <Ionicons name="add-circle-outline" size={19} color="#FFFFFF" />
+                <Text style={styles.addTransportButtonText}>
+                  Add Transport Manually
                 </Text>
               </Pressable>
             </View>
-          ))
-        ) : (
-          <View style={styles.comingSoonCard}>
-            <Ionicons
-              name={activeMode === "train" ? "train-outline" : "flask-outline"}
-              size={22}
-              color="#6B7280"
-            />
-            <Text style={styles.comingSoonTitle}>
-              {activeMode === "train"
-                ? "No train options right now"
-                : `${MODE_LABELS[activeMode]} options are coming soon`}
-            </Text>
-            <Text style={styles.comingSoonText}>
-              {activeMode === "train"
-                ? (transportAvailability?.message ??
-                  "No live train results could be loaded.")
-                : "Live bus, flight and cab APIs are not available yet, so schedules and prices cannot be shown here. You can still add your travel details manually below."}
-            </Text>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={openTransportModal}
-              style={({ pressed }) => [
-                styles.addTransportButton,
-                pressed && styles.addTransportButtonPressed,
-              ]}
-            >
-              <Ionicons name="add-circle-outline" size={19} color="#FFFFFF" />
-              <Text style={styles.addTransportButtonText}>
-                Add Transport Manually
-              </Text>
-            </Pressable>
-          </View>
+          </>
         )}
 
         {/* Stops */}
@@ -1748,7 +2255,65 @@ export default function JourneySetupScreen() {
         onClose={() => setStopSheetVisible(false)}
         onSelect={handleAddStop}
         validate={validateCandidate}
+        recommendations={recommendedStopSuggestions}
+        allowOffRouteSelect
       />
+
+      {/* Off-route stop warning — Add Anyway still permitted */}
+      <Modal
+        animationType="fade"
+        transparent
+        visible={pendingOffRouteStop !== null}
+        onRequestClose={() => setPendingOffRouteStop(null)}
+      >
+        <View style={styles.warningOverlay}>
+          <View style={styles.warningCard}>
+            <View style={styles.warningIconWrap}>
+              <Ionicons name="warning-outline" size={28} color="#B45309" />
+            </View>
+
+            <Text style={styles.warningTitle}>
+              Stop not on your route
+            </Text>
+            <Text style={styles.warningText}>
+              {pendingOffRouteStop
+                ? `${pendingOffRouteStop.name} isn't on your current route. Adding it creates a detour${
+                    pendingOffRouteStop.formatted
+                      ? `. (${pendingOffRouteStop.formatted})`
+                      : ""
+                  }`
+                : ""}
+            </Text>
+
+            <View style={styles.warningActions}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setPendingOffRouteStop(null)}
+                style={({ pressed }) => [
+                  styles.warningCancelButton,
+                  pressed && styles.warningCancelButtonPressed,
+                ]}
+              >
+                <Text style={styles.warningCancelButtonText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                onPress={confirmAddAnyway}
+                style={({ pressed }) => [
+                  styles.saveTransportButton,
+                  styles.warningAddAnywayButton,
+                  pressed && styles.saveTransportButtonPressed,
+                ]}
+              >
+                <Text style={styles.saveTransportButtonText}>
+                  Add Anyway
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Manual transport entry */}
       <Modal
@@ -2043,7 +2608,7 @@ export default function JourneySetupScreen() {
               <View>
                 <Text style={styles.modalTitle}>Transport Details</Text>
                 <Text style={styles.modalSubtitle}>
-                  {MODE_LABELS[(transport?.mode ?? "train") as TransportMode]}
+                  {MODE_LABELS[(transportDetailsRow?.mode ?? "train") as TransportMode]}
                 </Text>
               </View>
               <Pressable
@@ -2056,55 +2621,58 @@ export default function JourneySetupScreen() {
               </Pressable>
             </View>
 
-            {transport && (
+            {transportDetailsRow && (
               <View style={styles.detailsList}>
                 <DetailRow
                   label="Mode"
-                  value={MODE_LABELS[(transport.mode ?? "train") as TransportMode]}
+                  value={MODE_LABELS[(transportDetailsRow.mode ?? "train") as TransportMode]}
                 />
                 <DetailRow
                   label="Transport Name"
-                  value={transport.transport_name}
+                  value={transportDetailsRow.transport_name}
                 />
                 <DetailRow
                   label="Transport Number"
-                  value={transport.transport_number}
+                  value={transportDetailsRow.transport_number}
                 />
                 <DetailRow
                   label="Departure City"
-                  value={transport.departure_city}
+                  value={transportDetailsRow.departure_city}
                 />
                 <DetailRow
                   label="Arrival City"
-                  value={transport.arrival_city}
+                  value={transportDetailsRow.arrival_city}
                 />
                 <DetailRow
                   label="Departure Date"
-                  value={transport.departure_date}
+                  value={transportDetailsRow.departure_date}
                 />
                 <DetailRow
                   label="Departure Time"
-                  value={transport.departure_time}
+                  value={transportDetailsRow.departure_time}
                 />
                 <DetailRow
                   label="Arrival Date"
-                  value={transport.arrival_date}
+                  value={transportDetailsRow.arrival_date}
                 />
                 <DetailRow
                   label="Arrival Time"
-                  value={transport.arrival_time}
+                  value={transportDetailsRow.arrival_time}
                 />
-                <DetailRow label="Duration" value={transport.duration} />
-                <DetailRow label="Price" value={transport.price} />
+                <DetailRow
+                  label="Duration"
+                  value={transportDetailsRow.duration}
+                />
+                <DetailRow label="Price" value={transportDetailsRow.price} />
                 <DetailRow
                   label="Deal Price"
-                  value={transport.deal_price}
+                  value={transportDetailsRow.deal_price}
                 />
                 <DetailRow
                   label="Availability"
-                  value={transport.availability}
+                  value={transportDetailsRow.availability}
                 />
-                <DetailRow label="Route" value={transport.route} />
+                <DetailRow label="Route" value={transportDetailsRow.route} />
               </View>
             )}
 
@@ -2538,6 +3106,107 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#08751F",
   },
+  findTrainCard: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#F0F1F3",
+    padding: 18,
+    marginBottom: 16,
+  },
+  findTrainTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#1C1C1E",
+    marginTop: 10,
+  },
+  findTrainText: {
+    fontSize: 13,
+    color: "#6B7280",
+    lineHeight: 19,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  findTrainButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: "#00BC26",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 22,
+  },
+  findTrainButtonPressed: {
+    opacity: 0.9,
+  },
+  findTrainButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  legSection: {
+    marginBottom: 18,
+  },
+  legHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  legHeaderDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#00BC26",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  legHeaderNumber: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  legHeaderTitle: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#1C1C1E",
+  },
+  legHeaderCities: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#6B7280",
+    textAlign: "right",
+    marginLeft: 12,
+  },
+  legEmptyHint: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 4,
+    marginBottom: 4,
+  },
+  legEmptyHintText: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  addManualTransportLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  addManualTransportLinkPressed: {
+    opacity: 0.8,
+  },
+  addManualTransportLinkText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#00BC26",
+  },
   stopRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2741,6 +3410,71 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "rgba(17, 24, 39, 0.55)",
     justifyContent: "flex-end",
+  },
+  warningOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(17, 24, 39, 0.55)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  warningCard: {
+    width: "100%",
+    maxWidth: 400,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 20,
+    padding: 22,
+    alignItems: "center",
+  },
+  warningIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#FEF3C7",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  warningTitle: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#1C1C1E",
+    marginBottom: 6,
+    textAlign: "center",
+  },
+  warningText: {
+    fontSize: 13,
+    color: "#6B7280",
+    lineHeight: 19,
+    textAlign: "center",
+    marginBottom: 18,
+  },
+  warningActions: {
+    flexDirection: "row",
+    gap: 10,
+    width: "100%",
+  },
+  warningCancelButton: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    paddingVertical: 14,
+    minHeight: 48,
+  },
+  warningCancelButtonPressed: {
+    backgroundColor: "#F7F7F9",
+  },
+  warningCancelButtonText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#1C1C1E",
+  },
+  warningAddAnywayButton: {
+    flex: 1,
+    marginTop: 0,
   },
   modalSheet: {
     backgroundColor: "#FFFFFF",

@@ -3,6 +3,10 @@ import {
   toGeoapifyCategories,
   toOsmCategories,
 } from "./placeCategories";
+import {
+  validateStopAgainstRoute,
+  type RoutePoint,
+} from "./routeApi";
 
 export interface GetNearbyPlacesParams {
   latitude: number;
@@ -356,4 +360,232 @@ export async function getOsmPlaces({
       normalizeOsmToTravelPlace(raw, latitude, longitude)
     )
     .filter((place): place is TravelPlace => place !== null);
+}
+
+/* --------------------------------------------------
+   Recommended intermediate stops along a route
+-------------------------------------------------- */
+
+export interface RecommendedStop {
+  id: string;
+  name: string;
+  formatted: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface RecommendedStopsOptions {
+  /** Point sample radius around each route waypoint, in meters. */
+  radius?: number;
+  /** Settlements to gather during each sample query. */
+  limit?: number;
+  /** City names (case-insensitive) that must never be suggested. */
+  excludes?: string[];
+  /** Number of evenly spaced samples along the route. */
+  maxResults?: number;
+}
+
+const SETTLEMENT_CATEGORIES = ["city", "town", "village"];
+
+const DEFAULT_SAMPLE_RADIUS_M = 30000;
+const DEFAULT_SAMPLE_LIMIT = 20;
+const DEFAULT_MAX_RESULTS = 8;
+
+/**
+ * Sample fractions of the routed polyline (between source and destination),
+ * so recommendations are spread along the whole journey rather than bunched
+ * near one end.
+ */
+const SAMPLE_FRACTIONS = [0.12, 0.26, 0.4, 0.54, 0.68, 0.82];
+
+/**
+ * Interpolate a point along the routed polyline at the given arc-length
+ * fraction (0 = start, 1 = end). Returns null when the geometry is unusable.
+ */
+function pointAlongRoute(
+  coordinates: RoutePoint[],
+  fraction: number
+): RoutePoint | null {
+  if (!Array.isArray(coordinates) || coordinates.length < 2) {
+    return null;
+  }
+
+  const segmentLengths: number[] = [];
+  let total = 0;
+
+  for (let index = 0; index + 1 < coordinates.length; index += 1) {
+    const lengthMeters = calculateDistanceMeters(
+      coordinates[index].latitude,
+      coordinates[index].longitude,
+      coordinates[index + 1].latitude,
+      coordinates[index + 1].longitude
+    );
+
+    segmentLengths.push(lengthMeters);
+    total += lengthMeters;
+  }
+
+  if (total <= 0) {
+    return null;
+  }
+
+  let target = Math.max(0, Math.min(1, fraction)) * total;
+
+  for (let index = 0; index < segmentLengths.length; index += 1) {
+    const segment = segmentLengths[index];
+
+    if (target <= segment || index + 1 === segmentLengths.length) {
+      const ratio = segment > 0 ? target / segment : 0;
+      const start = coordinates[index];
+      const end = coordinates[index + 1];
+
+      return {
+        latitude: start.latitude + ratio * (end.latitude - start.latitude),
+        longitude:
+          start.longitude + ratio * (end.longitude - start.longitude),
+      };
+    }
+
+    target -= segment;
+  }
+
+  return null;
+}
+
+/** Rank a settlement so larger settlements ("cities") win over towns/villages. */
+function settlementRank(categories: string[] | null): number {
+  const list = categories ?? [];
+
+  if (list.includes("settlement.city")) return 0;
+  if (list.includes("settlement.town")) return 1;
+  if (list.includes("settlement.village")) return 2;
+
+  return 3;
+}
+
+function normalizeSuggestedName(place: NearbyPlace): string | null {
+  const name = (place.city || place.name || place.formatted || "").trim();
+
+  return name || null;
+}
+
+/**
+ * Dynamically build intermediate-stop suggestions from the CURRENT route
+ * geometry and the existing places service. Nothing here is hardcoded:
+ *
+ *   1. A few evenly spaced points are sampled along the routed polyline.
+ *   2. The existing Geoapify places feed returns settlements near each
+ *      sample (existing "settlement.*" categories + existing backend).
+ *   3. Every candidate is checked against the existing route corridor
+ *      (single ROUTE_STOP_TOLERANCE_KM via validateStopAgainstRoute).
+ *   4. Candidates are ranked by settlement size, then by how close they
+ *      are to the route, and de-duplicated by name.
+ *
+ * Returns an empty array on any failure — callers must not depend on it.
+ */
+export async function getRecommendedStopsAlongRoute(
+  routeCoordinates: RoutePoint[],
+  options: RecommendedStopsOptions = {}
+): Promise<RecommendedStop[]> {
+  if (!Array.isArray(routeCoordinates) || routeCoordinates.length < 2) {
+    return [];
+  }
+
+  const radius = options.radius ?? DEFAULT_SAMPLE_RADIUS_M;
+  const limit = options.limit ?? DEFAULT_SAMPLE_LIMIT;
+  const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
+
+  const excluded = new Set(
+    (options.excludes ?? [])
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  const samplePoints = SAMPLE_FRACTIONS
+    .map((fraction) => pointAlongRoute(routeCoordinates, fraction))
+    .filter((point): point is RoutePoint => point !== null);
+
+  if (samplePoints.length === 0) {
+    return [];
+  }
+
+  const candidates = new Map<string, RecommendedStop & { rank: number; distanceKm: number }>();
+
+  const queryRuns = samplePoints.map(async (point) => {
+    try {
+      const places = await getNearbyPlaces({
+        latitude: point.latitude,
+        longitude: point.longitude,
+        categories: SETTLEMENT_CATEGORIES,
+        radius,
+        limit,
+      });
+
+      for (const place of places) {
+        if (
+          typeof place.latitude !== "number" ||
+          typeof place.longitude !== "number"
+        ) {
+          continue;
+        }
+
+        const name = normalizeSuggestedName(place);
+
+        if (!name) continue;
+
+        const key = name.toLowerCase();
+
+        if (excluded.has(key)) continue;
+
+        const validation = validateStopAgainstRoute(
+          { latitude: place.latitude, longitude: place.longitude },
+          routeCoordinates
+        );
+
+        if (!validation.valid) continue;
+
+        const current = candidates.get(key);
+
+        const distanceKm = validation.distanceKm ?? Infinity;
+        const rank = settlementRank(place.categories);
+
+        if (
+          !current ||
+          rank < current.rank ||
+          (rank === current.rank && distanceKm < current.distanceKm)
+        ) {
+          candidates.set(key, {
+            id: place.id ?? `route-stop-${key}`,
+            name,
+            formatted: place.formatted ?? name,
+            latitude: place.latitude,
+            longitude: place.longitude,
+            rank,
+            distanceKm,
+          });
+        }
+      }
+    } catch (error) {
+      console.error(
+        "RECOMMENDED STOP SAMPLE ERROR:",
+        error instanceof Error ? error.message : error
+      );
+    }
+  });
+
+  await Promise.all(queryRuns);
+
+  return Array.from(candidates.values())
+    .sort(
+      (first, second) =>
+        first.rank - second.rank || first.distanceKm - second.distanceKm
+    )
+    .slice(0, maxResults)
+    .map(({ id, name, formatted, latitude, longitude }) => ({
+      id,
+      name,
+      formatted,
+      latitude,
+      longitude,
+    }));
 }
