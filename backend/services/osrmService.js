@@ -54,7 +54,7 @@ async function fetchOsrm(
 
       headers: {
         Accept: "application/json",
-        "User-Agent": "TrevalSaathi/1.0",
+        "User-Agent": "TravelSaathi/1.0",
       },
 
       signal: controller.signal,

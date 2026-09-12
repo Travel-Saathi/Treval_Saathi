@@ -182,24 +182,20 @@ out center tags;
 }
 
 /* --------------------------------------------------
-   Fetch one endpoint with AbortController timeout
+   Fetch one endpoint with AbortController timeout.
 -------------------------------------------------- */
 
-async function fetchEndpoint(endpoint, query) {
+async function fetchEndpoint(endpoint, query, timeoutMs = PER_ENDPOINT_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    PER_ENDPOINT_TIMEOUT_MS
-  );
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(
       `${endpoint.url}?data=${encodeURIComponent(query)}`,
       {
-        method: "GET",
         headers: {
           Accept: "application/json",
-          "User-Agent": "TrevalSaathi/1.0",
+          "User-Agent": "TravelSaathi/1.0",
         },
         signal: controller.signal,
       }

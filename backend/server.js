@@ -2,7 +2,9 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
-
+const {
+  searchBusRoutes,
+} = require("./services/busSearchService");
 const {
   normalizeOsmPlace,
 } = require("./utils/normalizeOsmPlace");
@@ -16,12 +18,21 @@ const {
   getWeather,
 } = require("./services/weatherService");
 
-const app = express();
+const {
+  geocodeSearch,
+} = require("./services/geocodeService");
 
+const app = express();
+app.use("/api/web-search", require("./routes/webSearch"));
 app.use(cors());
 app.use(express.json());
 app.use("/api/routing", require("./routes/routing"));
 app.use("/api/railway", require("./routes/railway"));
+app.use("/api/bus", require("./routes/bus"));
+app.use("/api/image-search", require("./routes/imageSearch"));
+app.use("/api/city", require("./routes/cityInfo"));
+app.use("/api/city/explore", require("./routes/cityExplore"));
+app.use("/api/route", require("./routes/routeAttractions"));
 
 const PORT = process.env.PORT || 5000;
 
@@ -31,10 +42,31 @@ const PORT = process.env.PORT || 5000;
 
 app.get("/", (req, res) => {
   res.json({
-    message: "Treval Saathi backend is running",
+    message: "Travel Saathi backend is running",
   });
 });
+app.get("/api/serper-test", async (req, res) => {
+  try {
+    const { from = "Bhopal", to = "Indore" } = req.query;
 
+    const buses = await searchBusRoutes(from, to);
+
+    res.json({
+      success: true,
+      from,
+      to,
+      count: buses.length,
+      buses,
+    });
+  } catch (error) {
+    console.error("Serper test error:", error);
+
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 /* --------------------------------------------------
    Location Search
    Search any city, destination, landmark, etc.
@@ -48,37 +80,10 @@ app.get("/api/location/search", async (req, res) => {
       return res.json([]);
     }
 
-    const url =
-      `https://api.geoapify.com/v1/geocode/search` +
-      `?text=${encodeURIComponent(text.trim())}` +
-      `&limit=10` +
-      `&format=json` +
-      `&apiKey=${process.env.GEOAPIFY_API_KEY}`;
-
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      throw new Error(
-        `Geoapify geocoding failed: ${response.status}`
-      );
-    }
-
-    const data = await response.json();
-
-    const locations = (data.results || []).map((item) => ({
-      id: item.place_id,
-      name:
-        item.name ||
-        item.city ||
-        item.state ||
-        item.country,
-      city: item.city,
-      state: item.state,
-      country: item.country,
-      formatted: item.formatted,
-      latitude: item.lat,
-      longitude: item.lon,
-    }));
+    const locations = await geocodeSearch({
+      text,
+      limit: 10,
+    });
 
     return res.json(locations);
   } catch (error) {
@@ -545,6 +550,6 @@ app.get("/api/weather", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(
-    `Treval Saathi backend running on http://localhost:${PORT}`
+    `Travel Saathi backend running on http://localhost:${PORT}`
   );
 });
