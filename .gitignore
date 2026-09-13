@@ -45,3 +45,8 @@ yarn-error.*
 # nested git repos / third-party self-hosted tools (kept locally, not versioned)
 backend/openserp/
 clerk-expo/
+# Background assets excluded from Git
+assets/images/background/
+
+# Background assets excluded from Git
+assets/images/background/
