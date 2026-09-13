@@ -130,6 +130,19 @@ function legKey(leg: { from: string; to: string }): string {
   return `${leg.from.trim().toLowerCase()}|${leg.to.trim().toLowerCase()}`;
 }
 
+/** Format a price that may already carry the rupee symbol. */
+function formatTransportPrice(
+  price: string | null | undefined
+): string | null {
+  const value = (price ?? "").trim();
+
+  if (!value) {
+    return null;
+  }
+
+  return value.startsWith("\u20B9") ? value : `\u20B9${value}`;
+}
+
 /** Find the saved transport row owned by a specific journey leg. */
 function findSavedTransport(
   rows: TripTransport[],
@@ -443,7 +456,7 @@ export default function JourneySetupScreen() {
     [stops]
   );
 
-  // Trains are only searched after the user presses "Find trains".
+  // Options are only searched after the user presses "Find trains"/"Find buses".
   // Results always reflect the CURRENT stop order: whenever the journey
   // changes (stop added/removed/reordered), old results are invalidated.
   useEffect(() => {
@@ -1059,7 +1072,7 @@ export default function JourneySetupScreen() {
     option: TransportOption,
     leg: JourneyLeg
   ) {
-    if (option.mode !== "train") {
+    if (option.mode !== "train" && option.mode !== "bus") {
       if (option.mode !== "unknown") {
         setActiveMode(option.mode);
       }
@@ -1073,10 +1086,13 @@ export default function JourneySetupScreen() {
     setTransportSaving(true);
     setTransportError(null);
 
+    const mode = option.mode;
+
     const input: SaveTransportInput = {
-      mode: "train",
+      mode,
       transport_number: option.transport_number ?? null,
-      transport_name: option.transport_name ?? null,
+      transport_name:
+        option.operating_company ?? option.transport_name ?? null,
       departure_city: leg.from,
       arrival_city: leg.to,
       departure_date: option.departure_date ?? null,
@@ -1102,12 +1118,14 @@ export default function JourneySetupScreen() {
 
       setFlash({
         kind: "success",
-        text: `Train selected for ${leg.from} -> ${leg.to}.`,
+        text: `${MODE_LABELS[mode]} selected for ${leg.from} -> ${leg.to}.`,
       });
     } catch (error) {
       console.error("TRANSPORT SELECT SAVE ERROR:", error);
 
-      setTransportError("Could not save the selected train.");
+      setTransportError(
+        `Could not save the selected ${MODE_LABELS[mode].toLowerCase()}.`
+      );
     } finally {
       setTransportSaving(false);
     }
@@ -1173,6 +1191,14 @@ export default function JourneySetupScreen() {
   }
 
   async function handleFindTrains() {
+    await handleFindTransport("train");
+  }
+
+  async function handleFindBuses() {
+    await handleFindTransport("bus");
+  }
+
+  async function handleFindTransport(mode: TransportMode) {
     if (!trip || journeyLegs.length === 0) {
       return;
     }
@@ -1192,7 +1218,7 @@ export default function JourneySetupScreen() {
         const key = legKey(leg);
 
         try {
-          const result = await searchTransportOptions("train", {
+          const result = await searchTransportOptions(mode, {
             source: leg.from,
             destination: leg.to,
             date: trip.start_date,
@@ -1502,10 +1528,14 @@ export default function JourneySetupScreen() {
           })}
         </ScrollView>
 
-        {activeMode === "train" ? (
+        {activeMode === "train" || activeMode === "bus" ? (
           <>
             <View style={styles.findTrainCard}>
-              <Ionicons name="train-outline" size={22} color="#00BC26" />
+              <Ionicons
+                name={activeMode === "bus" ? "bus-outline" : "train-outline"}
+                size={22}
+                color="#00BC26"
+              />
               <Text style={styles.findTrainTitle}>
                 {journeyLegs.length === 0
                   ? "No journey legs to search"
@@ -1527,7 +1557,7 @@ export default function JourneySetupScreen() {
               <Pressable
                 accessibilityRole="button"
                 disabled={journeyLegs.length === 0}
-                onPress={handleFindTrains}
+                onPress={activeMode === "bus" ? handleFindBuses : handleFindTrains}
                 style={({ pressed }) => [
                   styles.findTrainButton,
                   pressed && styles.findTrainButtonPressed,
@@ -1535,7 +1565,9 @@ export default function JourneySetupScreen() {
                 ]}
               >
                 <Ionicons name="search" size={18} color="#FFFFFF" />
-                <Text style={styles.findTrainButtonText}>Find trains</Text>
+                <Text style={styles.findTrainButtonText}>
+                  {activeMode === "bus" ? "Find buses" : "Find trains"}
+                </Text>
               </Pressable>
             </View>
 
@@ -1566,9 +1598,13 @@ export default function JourneySetupScreen() {
                   {saved ? (
                     <View style={styles.selectedTransportCard}>
                       <View style={styles.selectedTransportHeader}>
-                        <Ionicons name="train-outline" size={19} color="#00BC26" />
+                        <Ionicons
+                          name={(saved.mode ?? activeMode) === "bus" ? "bus-outline" : "train-outline"}
+                          size={19}
+                          color="#00BC26"
+                        />
                         <Text style={styles.selectedTransportMode}>
-                          {MODE_LABELS.train}
+                          {MODE_LABELS[(saved.mode ?? activeMode) as TransportMode]}
                         </Text>
                       </View>
 
@@ -1609,17 +1645,17 @@ export default function JourneySetupScreen() {
                           {saved.deal_price ? (
                             <View style={styles.priceRowInline}>
                               <Text style={styles.selectedTransportPrice}>
-                                ₹{saved.deal_price}
+                                {formatTransportPrice(saved.deal_price)}
                               </Text>
                               {saved.price && (
                                 <Text style={styles.selectedTransportPriceOld}>
-                                  ₹{saved.price}
+                                  {formatTransportPrice(saved.price)}
                                 </Text>
                               )}
                             </View>
                           ) : saved.price ? (
                             <Text style={styles.selectedTransportPrice}>
-                              ₹{saved.price}
+                              {formatTransportPrice(saved.price)}
                             </Text>
                           ) : (
                             <Text style={styles.selectedTransportPriceUnavailable}>
@@ -1691,10 +1727,14 @@ export default function JourneySetupScreen() {
                     <View style={styles.comingSoonCard}>
                       <ActivityIndicator size="small" color="#6B7280" />
                       <Text style={styles.comingSoonTitle}>
-                        Searching trains for this leg...
+                        {activeMode === "bus"
+                          ? "Searching buses for this leg..."
+                          : "Searching trains for this leg..."}
                       </Text>
                       <Text style={styles.comingSoonText}>
-                        Checking the railway enquiry service for {leg.from} to {leg.to}.
+                        {activeMode === "bus"
+                          ? `Looking for bus services from ${leg.from} to ${leg.to}.`
+                          : `Checking the railway enquiry service for ${leg.from} to ${leg.to}.`}
                       </Text>
                     </View>
                   ) : legError ? (
@@ -1717,13 +1757,16 @@ export default function JourneySetupScreen() {
                               {option.transport_name ?? "Not available"}
                             </Text>
                             <Text style={styles.optionNumber}>
-                              {option.transport_number ?? "Not available"}
+                              {activeMode === "bus"
+                                ? option.operating_company ??
+                                  option.transport_number ??
+                                  "Not available"
+                                : option.transport_number ?? "Not available"}
                             </Text>
                           </View>
                           <Text style={styles.optionPrice}>
-                            {option.price != null
-                              ? `₹${option.price}`
-                              : "Not available"}
+                            {formatTransportPrice(option.price) ??
+                              "Not available"}
                           </Text>
                         </View>
 
@@ -1757,6 +1800,22 @@ export default function JourneySetupScreen() {
                           </View>
                         ) : null}
 
+                        {activeMode === "bus" &&
+                        typeof (option.extra as { rating?: unknown })?.rating ===
+                          "number" ? (
+                          <View style={styles.optionMetaRow}>
+                            <Ionicons name="star" size={13} color="#F5A623" />
+                            <Text style={styles.optionMeta}>
+                              {(option.extra as { rating?: number }).rating}
+                              {typeof (
+                                option.extra as { ratingCount?: unknown }
+                              )?.ratingCount === "number"
+                                ? ` (${(option.extra as { ratingCount?: number }).ratingCount} ratings)`
+                                : ""}
+                            </Text>
+                          </View>
+                        ) : null}
+
                         <Pressable
                           accessibilityRole="button"
                           disabled={transportSaving}
@@ -1774,13 +1833,19 @@ export default function JourneySetupScreen() {
                     ))
                   ) : availability && !availability.available ? (
                     <View style={styles.comingSoonCard}>
-                      <Ionicons name="train-outline" size={22} color="#6B7280" />
+                      <Ionicons
+                        name={activeMode === "bus" ? "bus-outline" : "train-outline"}
+                        size={22}
+                        color="#6B7280"
+                      />
                       <Text style={styles.comingSoonTitle}>
-                        No train options for this leg
+                        {activeMode === "bus"
+                          ? "No bus options for this leg"
+                          : "No train options for this leg"}
                       </Text>
                       <Text style={styles.comingSoonText}>
                         {availability.message ??
-                          "No live train results could be loaded."}
+                          "No live results could be loaded."}
                       </Text>
                     </View>
                   ) : (
@@ -1791,7 +1856,9 @@ export default function JourneySetupScreen() {
                         color="#6B7280"
                       />
                       <Text style={styles.legEmptyHintText}>
-                        Press "Find trains" to see options for this leg.
+                        {activeMode === "bus"
+                          ? `Press "Find buses" to see options for this leg.`
+                          : 'Press "Find trains" to see options for this leg.'}
                       </Text>
                     </View>
                   )}
@@ -1868,17 +1935,17 @@ export default function JourneySetupScreen() {
                 {transport.deal_price ? (
                   <View style={styles.priceRowInline}>
                     <Text style={styles.selectedTransportPrice}>
-                      ₹{transport.deal_price}
+                      {formatTransportPrice(transport.deal_price)}
                     </Text>
                     {transport.price && (
                       <Text style={styles.selectedTransportPriceOld}>
-                        ₹{transport.price}
+                        {formatTransportPrice(transport.price)}
                       </Text>
                     )}
                   </View>
                 ) : transport.price ? (
                   <Text style={styles.selectedTransportPrice}>
-                    ₹{transport.price}
+                    {formatTransportPrice(transport.price)}
                   </Text>
                 ) : (
                   <Text style={styles.selectedTransportPriceUnavailable}>
@@ -1950,7 +2017,7 @@ export default function JourneySetupScreen() {
                 {MODE_LABELS[activeMode]} options are coming soon
               </Text>
               <Text style={styles.comingSoonText}>
-                Live bus, flight and cab APIs are not available yet, so
+                Live flight and cab APIs are not available yet, so
                 schedules and prices cannot be shown here. You can still add
                 your travel details manually below.
               </Text>

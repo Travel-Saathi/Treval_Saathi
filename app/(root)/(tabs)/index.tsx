@@ -12,14 +12,18 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import NotificationBell from "../../../components/NotificationBell";
 import { useSupabase } from "../../../hook/usesupabase";
 import { searchLocation } from "../../../services/locationApi";
 import { createTrip } from "../../../services/tripsApi";
+import { useAppTheme } from "../../../src/theme/ThemeProvider";
+import { useNotificationsStore } from "../../../store/notificationsStore";
 
 interface CitySelection {
   id: string;
@@ -92,6 +96,8 @@ function DatePickerModal({
 }: DatePickerModalProps) {
   const today = new Date();
 
+  const { theme } = useAppTheme();
+
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
 
@@ -163,9 +169,9 @@ function DatePickerModal({
       onRequestClose={onClose}
     >
       <View style={styles.modalOverlay}>
-        <View style={styles.dateSheet}>
+        <View style={[styles.dateSheet, { backgroundColor: theme.surface }]}>
           <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>{title}</Text>
+            <Text style={[styles.sheetTitle, { color: theme.text }]}>{title}</Text>
 
             <Pressable
               accessibilityRole="button"
@@ -177,7 +183,7 @@ function DatePickerModal({
                 pressed && styles.sheetClosePressed,
               ]}
             >
-              <Ionicons name="close" size={20} color="#1C1C1E" />
+              <Ionicons name="close" size={20} color={theme.text} />
             </Pressable>
           </View>
 
@@ -190,12 +196,14 @@ function DatePickerModal({
               style={({ pressed }) => [
                 styles.monthNavButton,
                 pressed && styles.monthNavButtonPressed,
+                { backgroundColor: theme.surfaceSecondary },
+                pressed && { backgroundColor: theme.border },
               ]}
             >
-              <Ionicons name="chevron-back" size={20} color="#1C1C1E" />
+              <Ionicons name="chevron-back" size={20} color={theme.text} />
             </Pressable>
 
-            <Text style={styles.monthLabel}>
+            <Text style={[styles.monthLabel, { color: theme.text }]}>
               {MONTH_LABELS[viewMonth]} {viewYear}
             </Text>
 
@@ -207,9 +215,11 @@ function DatePickerModal({
               style={({ pressed }) => [
                 styles.monthNavButton,
                 pressed && styles.monthNavButtonPressed,
+                { backgroundColor: theme.surfaceSecondary },
+                pressed && { backgroundColor: theme.border },
               ]}
             >
-              <Ionicons name="chevron-forward" size={20} color="#1C1C1E" />
+              <Ionicons name="chevron-forward" size={20} color={theme.text} />
             </Pressable>
           </View>
 
@@ -260,12 +270,13 @@ function DatePickerModal({
                       ]}
                     >
                       <Text
-                        style={[
-                          styles.dayText,
-                          isSelected && styles.dayTextSelected,
-                          disabled && styles.dayTextDisabled,
-                        ]}
-                      >
+                style={[
+                  styles.dayText,
+                  { color: theme.text },
+                  disabled && { color: theme.textMuted },
+                  isSelected && styles.dayTextSelected,
+                ]}
+              >
                         {day}
                       </Text>
                     </Pressable>
@@ -281,9 +292,11 @@ function DatePickerModal({
             style={({ pressed }) => [
               styles.dateCancelButton,
               pressed && styles.dateCancelButtonPressed,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+              pressed && { backgroundColor: theme.surfaceSecondary },
             ]}
           >
-            <Text style={styles.dateCancelText}>Cancel</Text>
+            <Text style={[styles.dateCancelText, { color: theme.text }]}>Cancel</Text>
           </Pressable>
         </View>
       </View>
@@ -294,6 +307,11 @@ function DatePickerModal({
 export default function HomeScreen() {
   const { user } = useUser();
   const supabase = useSupabase();
+  const { theme } = useAppTheme();
+  const { width: screenWidth } = useWindowDimensions();
+  const brandLogoWidth = screenWidth >= 768 ? 140 : 100;
+  const brandLogoHeight = brandLogoWidth / 3;
+  const unreadCount = useNotificationsStore((state) => state.unreadCount);
   const displayName = user?.firstName || user?.fullName || "User";
 
   console.log("[AUTH_DEBUG] HOME_MOUNT");
@@ -507,46 +525,32 @@ export default function HomeScreen() {
   const membersAtMax = members >= 20;
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <View style={styles.header}>
+    <SafeAreaView
+      style={[styles.screen, { backgroundColor: theme.background }]}
+    >
+      <View style={[styles.header, { backgroundColor: theme.headerBg }]}>
         <View style={styles.brandGroup}>
           <Image
             source={require("../../../assets/images/2logo.png")}
-            style={styles.brandLogo}
+            style={[
+              styles.brandLogo,
+              { width: brandLogoWidth, height: brandLogoHeight },
+            ]}
           />
-          <Text style={styles.greeting}>Hi, {displayName}</Text>
-          <Ionicons name="location-outline" size={18} color="#00bc26" />
+          <Text
+            style={[styles.greeting, { color: theme.headerText }]}
+            numberOfLines={1}
+          >
+            Hi, {displayName}
+          </Text>
+          <Ionicons name="location-outline" size={18} color={theme.headerText} />
         </View>
 
         <View style={styles.actions}>
-          <Pressable
-            accessibilityLabel="Notifications"
-            style={({ pressed }) => [
-              styles.iconButton,
-              pressed && styles.avatarPressed,
-            ]}
-          >
-            <Ionicons name="notifications-outline" size={24} color="#1C1C1E" />
-          </Pressable>
-
-          <Pressable
-            accessibilityLabel="Open profile"
-            onPress={() => router.push("/(root)/(tabs)/profile")}
-            style={({ pressed }) => [
-              styles.avatarButton,
-              pressed && styles.avatarPressed,
-            ]}
-          >
-            {user?.imageUrl ? (
-              <Image source={{ uri: user.imageUrl }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarFallback}>
-                <Text style={styles.avatarInitial}>
-                  {displayName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-          </Pressable>
+          <NotificationBell
+            unreadCount={unreadCount}
+            color={theme.headerText}
+          />
         </View>
       </View>
 
@@ -558,17 +562,22 @@ export default function HomeScreen() {
       >
         {/* MY JOURNEY PLAN */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>My Journey Plan</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>My Journey Plan</Text>
 
-          <Text style={styles.sectionSubtitle}>
+          <Text style={[styles.sectionSubtitle, { color: theme.textSecondary }]}>
             Plan your trip, your way.
           </Text>
 
-          <View style={styles.journeyCard}>
+          <View
+            style={[
+              styles.journeyCard,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}
+          >
             {/* From / To */}
             <View style={styles.tripRow}>
               <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>From</Text>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>From</Text>
 
                 <Pressable
                   accessibilityRole="button"
@@ -577,6 +586,7 @@ export default function HomeScreen() {
                   style={({ pressed }) => [
                     styles.cityFieldShell,
                     pressed && styles.fieldPressed,
+                    { backgroundColor: theme.inputBg, borderColor: theme.border },
                   ]}
                 >
                   <Ionicons
@@ -590,6 +600,7 @@ export default function HomeScreen() {
                     style={[
                       styles.fieldValue,
                       !sourceCity && styles.fieldPlaceholder,
+                      { color: theme.text },
                     ]}
                     numberOfLines={1}
                   >
@@ -607,7 +618,7 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>To</Text>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>To</Text>
 
                 <Pressable
                   accessibilityRole="button"
@@ -616,6 +627,7 @@ export default function HomeScreen() {
                   style={({ pressed }) => [
                     styles.cityFieldShell,
                     pressed && styles.fieldPressed,
+                    { backgroundColor: theme.inputBg, borderColor: theme.border },
                   ]}
                 >
                   <Ionicons
@@ -629,6 +641,7 @@ export default function HomeScreen() {
                     style={[
                       styles.fieldValue,
                       !destination && styles.fieldPlaceholder,
+                      { color: theme.text },
                     ]}
                     numberOfLines={1}
                   >
@@ -643,7 +656,7 @@ export default function HomeScreen() {
             {/* Start / End dates */}
             <View style={styles.tripRow}>
               <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>Start date</Text>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Start date</Text>
 
                 <Pressable
                   accessibilityRole="button"
@@ -652,6 +665,7 @@ export default function HomeScreen() {
                   style={({ pressed }) => [
                     styles.dateFieldShell,
                     pressed && styles.fieldPressed,
+                    { backgroundColor: theme.inputBg, borderColor: theme.border },
                   ]}
                 >
                   <Ionicons
@@ -665,6 +679,7 @@ export default function HomeScreen() {
                     style={[
                       styles.fieldValue,
                       !startDate && styles.fieldPlaceholder,
+                      { color: theme.text },
                     ]}
                     numberOfLines={1}
                   >
@@ -676,7 +691,7 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>End date</Text>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>End date</Text>
 
                 <Pressable
                   accessibilityRole="button"
@@ -685,6 +700,7 @@ export default function HomeScreen() {
                   style={({ pressed }) => [
                     styles.dateFieldShell,
                     pressed && styles.fieldPressed,
+                    { backgroundColor: theme.inputBg, borderColor: theme.border },
                   ]}
                 >
                   <Ionicons
@@ -698,6 +714,7 @@ export default function HomeScreen() {
                     style={[
                       styles.fieldValue,
                       !endDate && styles.fieldPlaceholder,
+                      { color: theme.text },
                     ]}
                     numberOfLines={1}
                   >
@@ -712,15 +729,20 @@ export default function HomeScreen() {
             {/* Budget / Members */}
             <View style={styles.tripRow}>
               <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>Budget (optional)</Text>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Budget (optional)</Text>
 
-                <View style={styles.budgetShell}>
+                <View
+                  style={[
+                    styles.budgetShell,
+                    { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  ]}
+                >
                   <Text style={styles.budgetSymbol}>₹</Text>
 
                   <TextInput
-                    style={styles.budgetInput}
+                    style={[styles.budgetInput, { color: theme.text }]}
                     placeholder="Amount"
-                    placeholderTextColor="#9CA1A9"
+                    placeholderTextColor={theme.textMuted}
                     value={budget}
                     onChangeText={setBudget}
                     keyboardType="number-pad"
@@ -730,9 +752,14 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>Members</Text>
+                <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Members</Text>
 
-                <View style={styles.membersShell}>
+                <View
+                  style={[
+                    styles.membersShell,
+                    { backgroundColor: theme.inputBg, borderColor: theme.border },
+                  ]}
+                >
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Decrease members"
@@ -751,7 +778,7 @@ export default function HomeScreen() {
                     />
                   </Pressable>
 
-                  <Text style={styles.membersValue}>{members}</Text>
+                  <Text style={[styles.membersValue, { color: theme.text }]}>{members}</Text>
 
                   <Pressable
                     accessibilityRole="button"
@@ -824,13 +851,20 @@ export default function HomeScreen() {
 
         {/* EXPLORE GROUPS */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Explore Groups</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>
+            Explore Groups
+          </Text>
 
-          <Text style={styles.sectionSubtitle}>
+          <Text style={[styles.sectionSubtitle, { color: theme.textSecondary }]}>
             Join groups, share experiences, make memories.
           </Text>
 
-          <View style={styles.placeholderCard}>
+          <View
+            style={[
+              styles.placeholderCard,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}
+          >
             <View style={styles.placeholderIcon}>
               <Ionicons
                 name="people-outline"
@@ -840,11 +874,11 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.placeholderBody}>
-              <Text style={styles.placeholderTitle}>
+              <Text style={[styles.placeholderTitle, { color: theme.text }]}>
                 Group journeys coming soon
               </Text>
 
-              <Text style={styles.placeholderText}>
+              <Text style={[styles.placeholderText, { color: theme.textSecondary }]}>
                 Join fellow travellers, share experiences and plan
                 trips together.
               </Text>
@@ -854,13 +888,20 @@ export default function HomeScreen() {
 
         {/* CITY PLANS & NEARBY */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>City Plans & Nearby</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>
+            City Plans & Nearby
+          </Text>
 
-          <Text style={styles.sectionSubtitle}>
+          <Text style={[styles.sectionSubtitle, { color: theme.textSecondary }]}>
             Discover city plans and nearby getaways.
           </Text>
 
-          <View style={styles.placeholderCard}>
+          <View
+            style={[
+              styles.placeholderCard,
+              { backgroundColor: theme.surface, borderColor: theme.border },
+            ]}
+          >
             <View style={styles.placeholderIcon}>
               <Ionicons
                 name="map-outline"
@@ -870,11 +911,11 @@ export default function HomeScreen() {
             </View>
 
             <View style={styles.placeholderBody}>
-              <Text style={styles.placeholderTitle}>
+              <Text style={[styles.placeholderTitle, { color: theme.text }]}>
                 City plans are on the way
               </Text>
 
-              <Text style={styles.placeholderText}>
+              <Text style={[styles.placeholderText, { color: theme.textSecondary }]}>
                 Explore curated city plans and nearby destinations
                 soon.
               </Text>
@@ -891,9 +932,9 @@ export default function HomeScreen() {
         onRequestClose={closeCityPicker}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.citySheet}>
+          <View style={[styles.citySheet, { backgroundColor: theme.surface }]}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>
+              <Text style={[styles.sheetTitle, { color: theme.text }]}>
                 {cityField === "from"
                   ? "Select source city"
                   : "Select destination city"}
@@ -909,22 +950,27 @@ export default function HomeScreen() {
                   pressed && styles.sheetClosePressed,
                 ]}
               >
-                <Ionicons name="close" size={20} color="#1C1C1E" />
+                <Ionicons name="close" size={20} color={theme.text} />
               </Pressable>
             </View>
 
-            <View style={styles.searchBar}>
+            <View
+              style={[
+                styles.searchBar,
+                { backgroundColor: theme.inputBg, borderColor: theme.border },
+              ]}
+            >
               <Ionicons
                 name="search"
                 size={20}
-                color="#6B7280"
+                color={theme.textSecondary}
                 style={styles.searchIcon}
               />
 
               <TextInput
-                style={styles.searchInput}
+                style={[styles.searchInput, { color: theme.text }]}
                 placeholder="Search city or place..."
-                placeholderTextColor="#9CA1A9"
+                placeholderTextColor={theme.textMuted}
                 value={citySearch}
                 onChangeText={setCitySearch}
                 autoCapitalize="words"
@@ -967,7 +1013,7 @@ export default function HomeScreen() {
                   color="#00BC26"
                 />
 
-                <Text style={styles.cityLoadingText}>
+                <Text style={[styles.cityLoadingText, { color: theme.textSecondary }]}>
                   Searching...
                 </Text>
               </View>
@@ -980,7 +1026,7 @@ export default function HomeScreen() {
                 style={styles.cityList}
                 contentContainerStyle={styles.cityListContent}
                 ListEmptyComponent={
-                  <Text style={styles.cityEmpty}>
+                  <Text style={[styles.cityEmpty, { color: theme.textMuted }]}>
                     {citySearch.trim().length < 2
                       ? "Start typing to find a city or place."
                       : "No cities found. Try another search."}
@@ -993,6 +1039,7 @@ export default function HomeScreen() {
                     style={({ pressed }) => [
                       styles.cityResult,
                       pressed && styles.cityResultPressed,
+                      { backgroundColor: theme.surface, borderColor: theme.border },
                     ]}
                   >
                     <View style={styles.cityPin}>
@@ -1004,12 +1051,12 @@ export default function HomeScreen() {
                     </View>
 
                     <View style={styles.cityResultText}>
-                      <Text style={styles.cityName}>
+                      <Text style={[styles.cityName, { color: theme.text }]}>
                         {item.name}
                       </Text>
 
                       <Text
-                        style={styles.cityAddress}
+                        style={[styles.cityAddress, { color: theme.textSecondary }]}
                         numberOfLines={2}
                       >
                         {item.formatted}
@@ -1061,17 +1108,17 @@ const styles = StyleSheet.create({
   brandGroup: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: 12,
+    flexShrink: 1,
   },
   brandLogo: {
-    width: 34,
-    height: 34,
     resizeMode: "contain",
   },
   greeting: {
     fontSize: 18,
     fontWeight: "700",
     color: "#1C1C1E",
+    flexShrink: 1,
   },
   actions: {
     flexDirection: "row",

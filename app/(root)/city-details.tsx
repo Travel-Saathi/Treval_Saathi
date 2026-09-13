@@ -13,6 +13,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import PageHeader from "../../components/PageHeader";
 import PlaceMap from "../../components/PlaceMap";
 import type { PlaceMapRegion } from "../../components/PlaceMap.types";
+import FunFactCard from "../../components/trip/FunFactCard";
 import PlacesSection from "../../components/trip/PlacesSection";
 import WeatherCard from "../../components/trip/WeatherCard";
 import { BlockError, BlockLoading } from "../../components/trip/primitives";
@@ -170,6 +171,10 @@ export default function CityDetailsScreen() {
 
         <View style={styles.block}>
           <WeatherCard city={city} coords={coords} />
+        </View>
+
+        <View style={styles.block}>
+          <FunFactCard city={city} />
         </View>
 
         <View style={styles.block}>

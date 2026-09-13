@@ -13,6 +13,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import TripCard from "../../../components/trip/TripCard";
+import { useSupabase } from "../../../hook/usesupabase";
+import { useAppTheme } from "../../../src/theme/ThemeProvider";
 import {
   listUserTrips,
   syncTripStatuses,
@@ -22,7 +24,6 @@ import {
   type TripSummaryCard,
 } from "../../../services/liveTripsApi";
 import { getTransport, listStops } from "../../../services/tripsApi";
-import { useSupabase } from "../../../hook/usesupabase";
 
 interface SectionGroup {
   lifecycle: TripLifecycle;
@@ -66,13 +67,20 @@ function groupTrips(trips: TripSummaryCard[]): SectionGroup[] {
 }
 
 function TripSkeleton() {
+  const { theme } = useAppTheme();
+
   return (
-    <View style={styles.skeletonCard}>
-      <View style={styles.skeletonCover} />
+    <View
+      style={[
+        styles.skeletonCard,
+        { backgroundColor: theme.surface, borderColor: theme.border },
+      ]}
+    >
+      <View style={[styles.skeletonCover, { backgroundColor: theme.border }]} />
       <View style={styles.skeletonBody}>
-        <View style={styles.skeletonLineWide} />
-        <View style={styles.skeletonLine} />
-        <View style={styles.skeletonLine} />
+        <View style={[styles.skeletonLineWide, { backgroundColor: theme.border }]} />
+        <View style={[styles.skeletonLine, { backgroundColor: theme.border }]} />
+        <View style={[styles.skeletonLine, { backgroundColor: theme.border }]} />
       </View>
     </View>
   );
@@ -81,6 +89,7 @@ function TripSkeleton() {
 export default function LiveTripsScreen() {
   const { user } = useUser();
   const supabase = useSupabase();
+  const { theme } = useAppTheme();
   const mounted = useRef(true);
 
   const [loading, setLoading] = useState(true);
@@ -176,19 +185,17 @@ export default function LiveTripsScreen() {
   const isEmpty = !loading && !failed && trips.length === 0;
 
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Live Trips</Text>
-        <Text style={styles.subtitle}>
-          Your journeys, sorted by what matters today.
-        </Text>
-      </View>
+    <SafeAreaView
+      style={[styles.safe, { backgroundColor: theme.background }]}
+      edges={["bottom"]}
+    >
+      
 
       {failed ? (
         <View style={styles.center}>
           <Ionicons name="cloud-offline-outline" size={40} color="#C4C8CF" />
-          <Text style={styles.centerTitle}>Unable to load your trips</Text>
-          <Text style={styles.centerText}>
+          <Text style={[styles.centerTitle, { color: theme.text }]}>Unable to load your trips</Text>
+          <Text style={[styles.centerText, { color: theme.textSecondary }]}>
             Check your connection and try again.
           </Text>
           <Pressable
@@ -225,8 +232,8 @@ export default function LiveTripsScreen() {
           {!loading && isEmpty ? (
             <View style={styles.center}>
               <Ionicons name="map-outline" size={44} color="#C4C8CF" />
-              <Text style={styles.centerTitle}>No trips yet</Text>
-              <Text style={styles.centerText}>
+              <Text style={[styles.centerTitle, { color: theme.text }]}>No trips yet</Text>
+              <Text style={[styles.centerText, { color: theme.textSecondary }]}>
                 Start planning your next journey with Saathi and it will
                 show up here.
               </Text>
@@ -247,7 +254,7 @@ export default function LiveTripsScreen() {
               {sections.map((section) => (
                 <View key={section.lifecycle}>
                   <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionLabel}>
+                    <Text style={[styles.sectionLabel, { color: theme.text }]}>
                       {section.label}
                     </Text>
                     <Text style={styles.sectionCount}>

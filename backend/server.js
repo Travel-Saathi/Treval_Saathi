@@ -549,7 +549,5 @@ app.get("/api/weather", async (req, res) => {
 -------------------------------------------------- */
 
 app.listen(PORT, () => {
-  console.log(
-    `Travel Saathi backend running on http://localhost:${PORT}`
-  );
+  console.log(`Travel Saathi backend running on port ${PORT}`);
 });

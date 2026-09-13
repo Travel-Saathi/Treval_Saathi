@@ -218,11 +218,117 @@ interface TrainSearchResult {
   }>;
 }
 
+interface BusSearchResult {
+  success: boolean;
+  from: string;
+  to: string;
+  count: number;
+  buses: {
+    name: string | null;
+    operator: string | null;
+    from: string | null;
+    to: string | null;
+    departure: string | null;
+    arrival: string | null;
+    duration: string | null;
+    price: string | null;
+    availability: string | null;
+    rating: number | null;
+    ratingCount: number | null;
+    bookingUrl: string | null;
+    description: string | null;
+  }[];
+}
+
+function mapBusOption(bus: BusSearchResult["buses"][number]): TransportOption {
+  const rawExtra: Record<string, unknown> = { ...bus };
+
+  return normalizeTransportOption("bus", {
+    ...rawExtra,
+    transport_name: bus.name,
+    operating_company: bus.operator,
+    departure_city: titleCaseStationName(bus.from || ""),
+    arrival_city: titleCaseStationName(bus.to || ""),
+    departure_time: bus.departure,
+    arrival_time: bus.arrival,
+    duration: bus.duration,
+    price: bus.price,
+    availability: bus.availability,
+    route: bus.from && bus.to ? `${bus.from} - ${bus.to}` : null,
+  });
+}
+
+async function searchBusOptions(
+  input: TransportSearchInput,
+  signal?: AbortSignal
+): Promise<TransportAvailability> {
+  const params = new URLSearchParams({
+    from: input.source,
+    to: input.destination,
+  });
+
+  if (input.date) {
+    params.set("date", input.date);
+  }
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/bus/search?${params.toString()}`,
+      { signal }
+    );
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const serverMessage =
+        body && body.error && typeof body.error === "string"
+          ? body.error
+          : null;
+
+      return {
+        mode: "bus",
+        available: false,
+        message: serverMessage || "Bus search could not be completed.",
+        results: [],
+      };
+    }
+
+    const data = (await response.json()) as BusSearchResult;
+
+    if (!data || !Array.isArray(data.buses) || data.buses.length === 0) {
+      return {
+        mode: "bus",
+        available: false,
+        message: "No bus services found on this route.",
+        results: [],
+      };
+    }
+
+    return {
+      mode: "bus",
+      available: true,
+      message: null,
+      results: data.buses.map(mapBusOption),
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw error;
+    }
+
+    return {
+      mode: "bus",
+      available: false,
+      message: "Unable to reach bus search right now.",
+      results: [],
+    };
+  }
+}
+
 /**
  * Search for transport options for the given mode.
  *
- * Train mode queries the backend's between-stations search (mNTES-backed).
- * Other modes have no live provider and return a truthful "coming soon"
+ * Train mode queries the backend between-stations search (mNTES-backed).
+ * Bus mode queries the backend bus search (provider-abstracted).
+ * Flight/cab have no live provider and return a truthful "coming soon"
  * result. The signature is stable so more providers can be added later.
  */
 export async function searchTransportOptions(
@@ -230,6 +336,10 @@ export async function searchTransportOptions(
   input: TransportSearchInput,
   signal?: AbortSignal
 ): Promise<TransportAvailability> {
+  if (mode === "bus") {
+    return searchBusOptions(input, signal);
+  }
+
   if (mode !== "train") {
     return {
       mode,

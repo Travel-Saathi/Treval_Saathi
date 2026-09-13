@@ -12,5 +12,8 @@ export type {
   PlaceMapDestination,
   PlaceMapProps,
   PlaceMapRegion,
+  PlaceMapStyle,
   RouteCoordinate,
+  RouteLeg,
+  RouteLegState,
 } from "./PlaceMap.types";

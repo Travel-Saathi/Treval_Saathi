@@ -13,12 +13,12 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from "react-native";
 
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSupabase } from "../../../hook/usesupabase";
+import { useAppTheme } from "../../../src/theme/ThemeProvider";
 
 const CITIES = [
   {
@@ -68,8 +68,7 @@ export default function ProfileScreen() {
   const { getToken, signOut } = useAuth();
   const supabase = useSupabase();
 
-  const colorScheme = useColorScheme();
-  const dark = colorScheme === "dark";
+  const { dark, mode, setMode } = useAppTheme();
 
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -907,6 +906,78 @@ const handleSignOut = async () => {
                   </View>
                 </View>
               </View>
+
+              {/* APPEARANCE */}
+              <View
+                style={[
+                  styles.sectionCard,
+                  dark && styles.cardDark,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.sectionTitle,
+                    dark && styles.textDark,
+                  ]}
+                >
+                  Appearance
+                </Text>
+
+                <Text
+                  style={[
+                    styles.editingSubtitle,
+                    dark && styles.secondaryTextDark,
+                  ]}
+                >
+                  Choose how the app looks.
+                </Text>
+
+                <View style={styles.appearanceRow}>
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={[
+                      styles.appearanceOption,
+                      mode === "light" &&
+                        styles.appearanceOptionSelected,
+                    ]}
+                    onPress={() => setMode("light")}
+                  >
+                    <Text style={styles.appearanceEmoji}>☀️</Text>
+                    <Text
+                      style={[
+                        styles.appearanceLabel,
+                        dark && styles.textDark,
+                        mode === "light" &&
+                          styles.appearanceLabelSelected,
+                      ]}
+                    >
+                      Light
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={[
+                      styles.appearanceOption,
+                      mode === "dark" &&
+                        styles.appearanceOptionSelected,
+                    ]}
+                    onPress={() => setMode("dark")}
+                  >
+                    <Text style={styles.appearanceEmoji}>🌙</Text>
+                    <Text
+                      style={[
+                        styles.appearanceLabel,
+                        dark && styles.textDark,
+                        mode === "dark" &&
+                          styles.appearanceLabelSelected,
+                      ]}
+                    >
+                      Dark
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </>
           )}
         </ScrollView>
@@ -1548,6 +1619,46 @@ const styles = StyleSheet.create({
 
   buttonDisabled: {
     opacity: 0.6,
+  },
+
+  /* APPEARANCE */
+
+  appearanceRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 4,
+  },
+
+  appearanceOption: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E1E1E4",
+    backgroundColor: "#F7F8FA",
+  },
+
+  appearanceOptionSelected: {
+    backgroundColor: "#E7F9EB",
+    borderColor: "#00BC26",
+  },
+
+  appearanceEmoji: {
+    fontSize: 18,
+  },
+
+  appearanceLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#1C1C1E",
+  },
+
+  appearanceLabelSelected: {
+    color: "#007A1E",
   },
 
   /* CITY MODAL */

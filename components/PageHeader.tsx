@@ -2,6 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { useAppTheme } from "../src/theme/ThemeProvider";
+
 interface PageHeaderProps {
   title: string;
   subtitle?: string;
@@ -12,6 +14,7 @@ export default function PageHeader({
   subtitle,
 }: PageHeaderProps) {
   const canGoBack = router.canGoBack();
+  const { theme } = useAppTheme();
 
   return (
     <View style={styles.header}>
@@ -25,16 +28,21 @@ export default function PageHeader({
         style={({ pressed }) => [
           styles.backButton,
           pressed && styles.backButtonPressed,
+          { backgroundColor: theme.surface },
+          pressed && { backgroundColor: theme.surfaceSecondary },
         ]}
       >
-        <Ionicons name="arrow-back" size={24} color="#1C1C1E" />
+        <Ionicons name="arrow-back" size={24} color={theme.text} />
       </Pressable>
 
       <View style={styles.headerText}>
-        <Text style={styles.title}>{title}</Text>
+        <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
 
         {Boolean(subtitle) && (
-          <Text style={styles.subtitle} numberOfLines={1}>
+          <Text
+            style={[styles.subtitle, { color: theme.textSecondary }]}
+            numberOfLines={1}
+          >
             {subtitle}
           </Text>
         )}

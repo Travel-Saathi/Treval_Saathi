@@ -55,6 +55,8 @@ export const OSM_CATEGORY_MAP: Record<string, string> = {
   hospital: "hospitals",
   pharmacy: "pharmacies",
   "tourist-attraction": "tourist_attractions",
+  temple: "temples",
+  historic: "historic",
   "gas-station": "fuel",
   parking: "parking",
 };

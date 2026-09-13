@@ -8,6 +8,9 @@ import {
   type RoutePoint,
 } from "./routeApi";
 
+/** Max route points sent to the attractions API (corridor math tolerates this). */
+const MAX_ROUTE_SENT_COORDINATES = 200;
+
 export interface GetNearbyPlacesParams {
   latitude: number;
   longitude: number;
@@ -588,4 +591,217 @@ export async function getRecommendedStopsAlongRoute(
       latitude,
       longitude,
     }));
+}
+
+/* --------------------------------------------------
+   Attractions along a route
+-------------------------------------------------- */
+
+export interface RouteAttraction {
+  id: string;
+  name: string | null;
+  category: string;
+  formatted: string | null;
+  description: string | null;
+  /** May be null when the attraction could not be geocoded to coordinates. */
+  latitude: number | null;
+  longitude: number | null;
+  /** Shortest distance from the attraction to the route corridor, in km. */
+  distanceKm: number | null;
+  /** Human-readable corridor distance, e.g. "~1.4 km from route". */
+  distanceText: string | null;
+  website: string | null;
+  imageUrl: string | null;
+  /**
+   * Nearest journey city (computed server-side). Used to route UI taps
+   * to the existing city detail screen.
+   */
+  nearestCity: string | null;
+  /** Provider-neutral origin of the attraction (e.g. "web"). */
+  source?: string;
+}
+
+export type RouteAttractionsStatus = "ok" | "no-geometry" | "osm-error";
+
+export interface RouteAttractionsResult {
+  status: RouteAttractionsStatus;
+  attractions: RouteAttraction[];
+}
+
+export interface GetAttractionsAlongRouteOptions {
+  /** App category IDs to look up (defaults to the backend route bundle). */
+  categories?: string[];
+  /** Maximum number of attractions to return. */
+  maxResults?: number;
+  /** Corridor width in km (defaults to the backend ROUTE_ATTRACTION_RADIUS_KM). */
+  corridorKm?: number;
+  /** Ordered journey city names. Used for nearest-city + web fallback. */
+  cities?: string[];
+}
+
+/**
+ * Evenly sample a dense route polyline down to at most
+ * MAX_ROUTE_SENT_COORDINATES points, always keeping both ends. The
+ * corridor distance calculation tolerates this: a few km between samples
+ * is negligible against a 25 km corridor.
+ */
+function decimateCoordinates(points: RoutePoint[]): RoutePoint[] {
+  if (points.length <= MAX_ROUTE_SENT_COORDINATES) {
+    return points;
+  }
+
+  const sampled: RoutePoint[] = [];
+  const step = (points.length - 1) / (MAX_ROUTE_SENT_COORDINATES - 1);
+
+  for (let index = 0; index < MAX_ROUTE_SENT_COORDINATES; index += 1) {
+    sampled.push(points[Math.round(index * step)]);
+  }
+
+  return sampled;
+}
+
+function isNullableFinite(value: unknown): value is number | null {
+  return (
+    value === null ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function normalizeRouteAttraction(raw: unknown): RouteAttraction | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const item = raw as Record<string, unknown>;
+
+  const id = typeof item.id === "string" ? item.id : "";
+  const latitude = isNullableFinite(item.latitude) ? item.latitude : null;
+  const longitude = isNullableFinite(item.longitude) ? item.longitude : null;
+  const distanceKm = isNullableFinite(item.distanceKm) ? item.distanceKm : null;
+
+  return {
+    id,
+    name: typeof item.name === "string" ? item.name : null,
+    category:
+      typeof item.category === "string" && item.category
+        ? item.category
+        : "attraction",
+    formatted: typeof item.formatted === "string" ? item.formatted : null,
+    description:
+      typeof item.description === "string" ? item.description : null,
+    latitude,
+    longitude,
+    distanceKm,
+    distanceText:
+      typeof item.distanceText === "string" && item.distanceText
+        ? item.distanceText
+        : null,
+    website: typeof item.website === "string" ? item.website : null,
+    imageUrl: typeof item.imageUrl === "string" ? item.imageUrl : null,
+    nearestCity:
+      typeof item.nearestCity === "string" ? item.nearestCity : null,
+    source: typeof item.source === "string" ? item.source : undefined,
+  };
+}
+
+/**
+ * Discover real places of interest close to an existing route geometry.
+ *
+ * Delegates to GET /api/route/attractions, which runs the discovery
+ * server-side: it builds OpenSERP search queries from the ordered journey
+ * cities and route segments, geocodes the real results to coordinates with
+ * an OpenStreetMap-based geocoder, keeps only results within `corridorKm`
+ * of the ACTUAL OSRM route polyline, ranks by real signals and de-duplicates
+ * by name. Attractions that cannot be geocoded remain list rows without a
+ * map marker; coordinates are never fabricated.
+ *
+ * The client never fabricates results and only renders them when the
+ * backend returns `status: "ok"`.
+ */
+export async function getAttractionsAlongRoute(
+  routeCoordinates: RoutePoint[],
+  options: GetAttractionsAlongRouteOptions = {}
+): Promise<RouteAttractionsResult> {
+  if (!Array.isArray(routeCoordinates) || routeCoordinates.length < 2) {
+    return { status: "no-geometry", attractions: [] };
+  }
+
+  const coordinates = routeCoordinates.filter(
+    (point) =>
+      point != null &&
+      Number.isFinite(point.latitude) &&
+      Number.isFinite(point.longitude)
+  );
+
+  if (coordinates.length < 2) {
+    return { status: "no-geometry", attractions: [] };
+  }
+
+  const sentCoordinates = decimateCoordinates(coordinates);
+
+  const query = new URLSearchParams({
+    coords: sentCoordinates
+      .map((point) => `${point.latitude},${point.longitude}`)
+      .join(";"),
+  });
+
+  if (options.categories && options.categories.length > 0) {
+    const osmCategories = toOsmCategories(options.categories);
+
+    if (osmCategories.length > 0) {
+      query.set("categories", osmCategories.join(";"));
+    }
+  }
+
+  if (options.maxResults) {
+    query.set("max", String(options.maxResults));
+  }
+
+  if (options.corridorKm) {
+    query.set("corridorKm", String(options.corridorKm));
+  }
+
+  if (options.cities && options.cities.length > 0) {
+    query.set("cities", options.cities.join(";"));
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(
+      `${API_BASE_URL}/api/route/attractions?${query.toString()}`
+    );
+  } catch {
+    return { status: "osm-error", attractions: [] };
+  }
+
+  let data: unknown;
+
+  try {
+    data = await response.json();
+  } catch {
+    return { status: "osm-error", attractions: [] };
+  }
+
+  if (!response.ok || !data || typeof data !== "object") {
+    const reason: RouteAttractionsStatus =
+      data &&
+      typeof data === "object" &&
+      "reason" in data &&
+      data.reason === "no-geometry"
+        ? "no-geometry"
+        : "osm-error";
+
+    return { status: reason, attractions: [] };
+  }
+
+  const rawAttractions = (data as { attractions?: unknown }).attractions;
+
+  const attractions = Array.isArray(rawAttractions)
+    ? rawAttractions
+        .map(normalizeRouteAttraction)
+        .filter((item): item is RouteAttraction => item !== null)
+    : [];
+
+  return { status: "ok", attractions };
 }

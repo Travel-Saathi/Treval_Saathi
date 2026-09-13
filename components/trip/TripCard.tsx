@@ -19,6 +19,7 @@ import {
   type TripSummaryCard,
 } from "../../services/liveTripsApi";
 import { getWeather } from "../../services/weatherApi";
+import { useAppTheme } from "../../src/theme/ThemeProvider";
 import TripStatusBadge from "./TripStatusBadge";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
@@ -186,9 +187,10 @@ export default function TripCard({
   }
 
   const tint = coverColor(destination);
+  const { theme } = useAppTheme();
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
       <Pressable
         accessibilityRole="button"
         onPress={() => onOpen(trip)}
@@ -232,7 +234,7 @@ export default function TripCard({
 
       <View style={styles.body}>
         <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>
+          <Text style={[styles.title, { color: theme.text }]} numberOfLines={1}>
             {trip.title?.trim() || destination}
           </Text>
           <Text style={styles.destinationLink} onPress={() => openCity(destination)}>
@@ -245,8 +247,8 @@ export default function TripCard({
             .filter((item) => item.text !== null)
             .map((item) => (
               <View key={item.icon} style={styles.metaRow}>
-                <Ionicons name={item.icon} size={14} color="#71717A" />
-                <Text style={styles.metaText} numberOfLines={1}>
+                <Ionicons name={item.icon} size={14} color={theme.textSecondary} />
+                <Text style={[styles.metaText, { color: theme.textSecondary }]} numberOfLines={1}>
                   {item.text}
                 </Text>
               </View>

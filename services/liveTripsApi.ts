@@ -7,12 +7,12 @@ import {
   tripDurationDays,
 } from "../lib/tripDates";
 import {
-  getTransport,
   getTrip,
+  listStops,
+  listTransport,
   type TripRow,
   type TripStop,
   type TripTransport,
-  listStops,
 } from "./tripsApi";
 
 /**
@@ -59,6 +59,7 @@ export interface TripDetailsBundle {
   trip: TripRow;
   stops: TripStop[];
   transport: TripTransport | null;
+  transports: TripTransport[];
 }
 
 const TRIP_COLUMNS =
@@ -176,25 +177,31 @@ export async function listUserTrips(
 }
 
 /**
- * Full Trip Details bundle: trip header plus its ordered stops and the
- * selected transport. Loaded in parallel (spec section 24): a failure in
- * any part surfaces on its own block, never the whole page.
+ * Full Trip Details bundle: trip header plus its ordered stops and every
+ * saved transport row (one per journey leg). Loaded in parallel; a failure
+ * in any part surfaces on its own block, never the whole page. `transport`
+ * is kept as the first row for legacy callers.
  */
 export async function getTripDetails(
   supabase: SupabaseClient,
   tripId: string
 ): Promise<TripDetailsBundle> {
-  const [trip, stops, transport] = await Promise.all([
+  const [trip, stops, transports] = await Promise.all([
     getTrip(supabase, tripId),
     listStops(supabase, tripId),
-    getTransport(supabase, tripId),
+    listTransport(supabase, tripId),
   ]);
 
   if (!trip) {
     throw new Error("Trip not found");
   }
 
-  return { trip, stops, transport };
+  return {
+    trip,
+    stops,
+    transports,
+    transport: transports.length > 0 ? transports[0] : null,
+  };
 }
 
 /**
@@ -257,4 +264,57 @@ export function tripCitySequence(
   }
 
   return cities;
+}
+
+/* --------------------------------------------------
+   Current Journey Segment
+-------------------------------------------------- */
+
+export interface JourneySegment {
+  origin: string;
+  destination: string;
+  allCities: string[];
+  segmentIndex: number;
+  totalSegments: number;
+  remainingDistance: string | null;
+  estimatedTime: string | null;
+}
+
+/**
+ * Determine the current journey segment based on trip lifecycle and stops.
+ *
+ * For an ACTIVE trip the segment runs from the source city to the first
+ * intermediate stop (the next checkpoint). For UPCOMING or COMPLETED
+ * trips the segment covers the full route.
+ */
+export function getCurrentJourneySegment(
+  trip: TripSummaryCard,
+  stops: TripStop[]
+): JourneySegment {
+  const allCities = tripCitySequence(trip, stops);
+  const source = trip.source_city?.trim() || "Source";
+  const destination = trip.destination?.trim() || "Destination";
+
+  let origin = source;
+  let dest = destination;
+  let segmentIndex = 0;
+
+  if (trip.lifecycle === "active" && stops.length > 0) {
+    const nextStop = stops[0];
+    origin = source;
+    dest = nextStop.city.trim() || destination;
+    segmentIndex = 0;
+  }
+
+  const totalSegments = Math.max(allCities.length - 1, 1);
+
+  return {
+    origin,
+    destination: dest,
+    allCities,
+    segmentIndex,
+    totalSegments,
+    remainingDistance: null,
+    estimatedTime: null,
+  };
 }

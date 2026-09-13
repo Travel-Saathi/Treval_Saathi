@@ -3,10 +3,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
 
 import {
-  getOsmPlaces,
-  type TravelPlace,
-} from "../../services/placesApi";
-import { resolveCityCoordinates } from "../../services/routeApi";
+  getCityPlaces,
+  type DiscoveredPlace,
+} from "../../services/cityDiscoveryApi";
 import { BlockEmpty, BlockError, BlockLoading, SectionTitle } from "./primitives";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
@@ -27,17 +26,27 @@ const CATEGORY_LABELS: Record<string, string> = {
   parking: "Parking",
 };
 
+function capitalize(value: string | null | undefined): string | null {
+  const text = String(value ?? "").trim();
+
+  if (!text) {
+    return null;
+  }
+
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /**
- * Reusable nearby-places block. Used once per category (attractions,
- * hotels, restaurants) on Trip Details and City Details. It owns its
- * own loading/error/empty states so every category degrades
- * independently. Places render only real OSM data; images/ratings come
- * later from enrichment providers and are hidden until provided.
+ * Place discovery block used by the Explore City feature. It discovers real
+ * places for a "category (or custom category) in a city" through the backend
+ * city-discovery service — the selected city always drives the search. Own
+ * loading/error/empty states so every category degrades independently.
  */
 export default function PlacesSection({
   title,
   subtitle,
   categories,
+  customCategory,
   city,
   coords,
   limit = 8,
@@ -45,33 +54,38 @@ export default function PlacesSection({
   title: string;
   subtitle?: string | null;
   categories: string[];
+  customCategory?: string | null;
   city: string;
   coords?: CityCoords | null;
   limit?: number;
 }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const [places, setPlaces] = useState<TravelPlace[]>([]);
+  const [places, setPlaces] = useState<DiscoveredPlace[]>([]);
   const [attempt, setAttempt] = useState(0);
+
+  const categoryId = categories[0];
+  const custom = customCategory && customCategory.trim()
+    ? customCategory.trim()
+    : null;
 
   const load = useCallback(async () => {
     setState("loading");
 
     try {
-      const point =
-        coords ?? (await resolveCityCoordinates(city));
-
-      const result = await getOsmPlaces({
-        latitude: point.latitude,
-        longitude: point.longitude,
-        categories,
+      const result = await getCityPlaces({
+        city,
+        categoryId: categoryId || undefined,
+        customCategory: custom || undefined,
+        coords,
+        limit,
       });
 
-      setPlaces(result.sort(sortByDistance).slice(0, limit));
+      setPlaces(result);
       setState("ready");
     } catch {
       setState("error");
     }
-  }, [city, coords, categories, limit]);
+  }, [city, categoryId, custom, coords, limit]);
 
   useEffect(() => {
     load();
@@ -81,20 +95,13 @@ export default function PlacesSection({
     setAttempt((value) => value + 1);
   }
 
-  function sortByDistance(
-    a: TravelPlace,
-    b: TravelPlace
-  ): number {
-    const da = a.distanceMeters ?? Number.MAX_SAFE_INTEGER;
-    const db = b.distanceMeters ?? Number.MAX_SAFE_INTEGER;
-    return da - db;
-  }
-
-  const icon: IoniconName = categories.includes("hotel")
+  const icon: IoniconName = categoryId === "hotel"
     ? "bed-outline"
-    : categories.includes("restaurant")
+    : categoryId === "restaurant"
       ? "restaurant-outline"
-      : "sparkles-outline";
+      : categoryId === "temple"
+        ? "business-outline"
+        : "sparkles-outline";
 
   return (
     <View>
@@ -121,8 +128,14 @@ export default function PlacesSection({
         <View style={styles.list}>
           {places.map((place) => {
             const label =
-              (place.name ?? place.formatted ?? "Place").trim() || "Place";
-            const categoryLabel = CATEGORY_LABELS[place.category] ?? null;
+              (place.name ?? place.address ?? "Place").trim() || "Place";
+            const categoryLabel =
+              capitalize(place.categoryLabel) ??
+              CATEGORY_LABELS[place.category ?? ""] ??
+              null;
+            const meta = [categoryLabel, place.distanceText]
+              .filter(Boolean)
+              .join(" • ");
 
             return (
               <View key={place.id} style={styles.row}>
@@ -142,14 +155,14 @@ export default function PlacesSection({
                   <Text style={styles.name} numberOfLines={1}>
                     {label}
                   </Text>
-                  <Text style={styles.meta} numberOfLines={1}>
-                    {[categoryLabel, place.distanceText]
-                      .filter(Boolean)
-                      .join(" • ")}
-                  </Text>
-                  {place.opening_hours ? (
-                    <Text style={styles.hours} numberOfLines={1}>
-                      {place.opening_hours}
+                  {meta ? (
+                    <Text style={styles.meta} numberOfLines={1}>
+                      {meta}
+                    </Text>
+                  ) : null}
+                  {place.description ? (
+                    <Text style={styles.desc} numberOfLines={2}>
+                      {place.description}
                     </Text>
                   ) : null}
                 </View>
@@ -202,9 +215,10 @@ const styles = StyleSheet.create({
     color: "#71717A",
     marginTop: 1,
   },
-  hours: {
-    fontSize: 11,
+  desc: {
+    fontSize: 12,
     color: "#9CA3AF",
-    marginTop: 1,
+    marginTop: 2,
+    lineHeight: 16,
   },
 });
