@@ -127,9 +127,11 @@ export function buildSegmentTransports(
 export default function SegmentTransportList({
   segments,
   onOpenCity,
+  journeyCities,
 }: {
   segments: SegmentTransportItem[];
   onOpenCity: (city: string) => void;
+  journeyCities?: string[];
 }) {
   const { theme } = useAppTheme();
 
@@ -252,6 +254,8 @@ export default function SegmentTransportList({
                   segmentOrigin={origin}
                   segmentDestination={destination}
                   onOpenCity={onOpenCity}
+                  journeyCities={journeyCities}
+                  isCurrentLeg={current}
                 />
               </View>
             ) : null}

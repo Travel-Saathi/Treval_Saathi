@@ -22,6 +22,7 @@ import PlaceMap, {
   type JourneyStopMarker,
   type PlaceMapRegion,
 } from "../../components/PlaceMap";
+import TripSummaryModal from "../../components/TripSummaryModal";
 import { useSupabase } from "../../hook/usesupabase";
 import { getRecommendedStopsAlongRoute } from "../../services/placesApi";
 import {
@@ -35,6 +36,7 @@ import {
   type TripTransport,
   listStops,
   listTransport,
+  normalizeISODate,
   removeStop,
   removeTransportLeg,
   saveLegTransport,
@@ -55,6 +57,8 @@ import {
   getWeather as fetchWeather,
   type WeatherResponse,
 } from "../../services/weatherApi";
+import { useAppTheme } from "../../src/theme/ThemeProvider";
+import type { ThemeTokens } from "../../src/theme/tokens";
 
 const MONTH_LABELS = [
   "January",
@@ -123,6 +127,35 @@ function formatKilometers(kilometers: number | null): string {
 interface JourneyLeg {
   from: string;
   to: string;
+}
+
+/**
+ * Map an existing saved/selected transport row back into the save shape.
+ * Dates are normalized to `YYYY-MM-DD`; the trip start date is the fallback
+ * departure date when a legacy row has none.
+ */
+function toSaveTransportInput(
+  row: TripTransport,
+  fallbackDepartureDate: string | null
+): SaveTransportInput {
+  return {
+    mode: row.mode ?? "train",
+    transport_number: row.transport_number ?? null,
+    transport_name: row.transport_name ?? null,
+    departure_city: row.departure_city ?? null,
+    arrival_city: row.arrival_city ?? null,
+    departure_date:
+      normalizeISODate(row.departure_date) ??
+      normalizeISODate(fallbackDepartureDate),
+    departure_time: row.departure_time ?? null,
+    arrival_date: normalizeISODate(row.arrival_date) ?? null,
+    arrival_time: row.arrival_time ?? null,
+    duration: row.duration ?? null,
+    price: row.price ?? null,
+    deal_price: row.deal_price ?? null,
+    availability: row.availability ?? null,
+    route: row.route ?? null,
+  };
 }
 
 /** Canonical, case-insensitive key that identifies one journey leg. */
@@ -262,6 +295,8 @@ export default function JourneySetupScreen() {
     typeof params.tripId === "string" ? params.tripId : null;
 
   const supabase = useSupabase();
+  const { theme, dark } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme, dark), [theme, dark]);
 
   const sourceSeed = useMemo(
     () => (typeof params.source === "string" ? parseCityParam(params.source) : null),
@@ -286,6 +321,9 @@ export default function JourneySetupScreen() {
 
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [reloadKey, setReloadKey] = useState(0);
+  const [tripSummaryVisible, setTripSummaryVisible] = useState(false);
+  const [startingTrip, setStartingTrip] = useState(false);
+  const [startTripError, setStartTripError] = useState<string | null>(null);
 
   const [trip, setTrip] = useState<{
     id: string;
@@ -960,7 +998,7 @@ export default function JourneySetupScreen() {
     }
 
     const modeMatch = savedTransports.find(
-      (row) => (row.mode ?? "train") === activeMode
+      (row) => (row.mode ?? "train").toUpperCase() === activeMode.toUpperCase()
     );
 
     return modeMatch ?? savedTransports[0];
@@ -1017,6 +1055,15 @@ export default function JourneySetupScreen() {
       return;
     }
 
+    const departureDate =
+      normalizeISODate(draft.departure_date) ??
+      normalizeISODate(trip?.start_date ?? null);
+
+    if (!departureDate) {
+      setTransportError("Enter a valid departure date.");
+      return;
+    }
+
     setTransportSaving(true);
     setTransportError(null);
 
@@ -1026,7 +1073,7 @@ export default function JourneySetupScreen() {
       transport_name: transportName || null,
       departure_city: draft.departure_city.trim() || null,
       arrival_city: draft.arrival_city.trim() || null,
-      departure_date: draft.departure_date.trim() || null,
+      departure_date: departureDate,
       departure_time: draft.departure_time.trim() || null,
       arrival_date: draft.arrival_date.trim() || null,
       arrival_time: draft.arrival_time.trim() || null,
@@ -1083,10 +1130,21 @@ export default function JourneySetupScreen() {
       return;
     }
 
+    const mode = option.mode;
+
+    const departureDate =
+      normalizeISODate(option.departure_date) ??
+      normalizeISODate(trip?.start_date ?? null);
+
+    if (!departureDate) {
+      setTransportError(
+        "Select a valid departure date to save this transport."
+      );
+      return;
+    }
+
     setTransportSaving(true);
     setTransportError(null);
-
-    const mode = option.mode;
 
     const input: SaveTransportInput = {
       mode,
@@ -1095,7 +1153,7 @@ export default function JourneySetupScreen() {
         option.operating_company ?? option.transport_name ?? null,
       departure_city: leg.from,
       arrival_city: leg.to,
-      departure_date: option.departure_date ?? null,
+      departure_date: departureDate,
       departure_time: option.departure_time ?? null,
       arrival_date: option.arrival_date ?? null,
       arrival_time: option.arrival_time ?? null,
@@ -1254,10 +1312,116 @@ export default function JourneySetupScreen() {
       return;
     }
 
-    // The journey now flows into the LIVE TRIPS home (spec section 27):
-    // the just-created trip appears instantly on the Live Trips tab.
-    router.navigate("/(root)/(tabs)/live-trips");
+    // Step 1.1: Continue Journey opens the "YOUR TRIP" summary popup.
+    // The session is created later from the popup's START TRIP action.
+    setTripSummaryVisible(true);
   }
+
+  function handleStartTrip() {
+    if (startingTrip || !tripId) {
+      return;
+    }
+
+    setStartTripError(null);
+
+    const tripDeparture = normalizeISODate(trip?.start_date ?? null);
+
+    if (!tripDeparture) {
+      setStartTripError("Add a trip start date before starting the trip.");
+      return;
+    }
+
+    setStartingTrip(true);
+
+    (async () => {
+      try {
+        const selectedTransport = transport;
+
+        const input: SaveTransportInput = selectedTransport
+          ? toSaveTransportInput(selectedTransport, tripDeparture)
+          : {
+              mode: summaryTransport.mode,
+              transport_number: summaryTransport.number,
+              transport_name: summaryTransport.name,
+              departure_city: trip?.source_city ?? null,
+              arrival_city: trip?.destination ?? null,
+              departure_date: tripDeparture,
+              departure_time: null,
+              arrival_date: null,
+              arrival_time: null,
+              duration: null,
+              price: null,
+              deal_price: null,
+              availability: null,
+              route:
+                trip?.source_city && trip?.destination
+                  ? `${trip.source_city} - ${trip.destination}`
+                  : null,
+            };
+
+        const legFrom =
+          (selectedTransport
+            ? selectedTransport.departure_city
+            : null) ??
+          trip?.source_city ??
+          "";
+        const legTo =
+          (selectedTransport
+            ? selectedTransport.arrival_city
+            : null) ??
+          trip?.destination ??
+          "";
+
+        await saveLegTransport(supabase, tripId, input, {
+          from: legFrom,
+          to: legTo,
+        });
+
+        await refreshSavedTransports();
+
+        setTripSummaryVisible(false);
+        router.push({
+          pathname: "/(root)/trip-details",
+          params: { tripId },
+        });
+      } catch (error: unknown) {
+        const err = error as {
+          code?: string;
+          message?: string;
+          details?: string;
+          hint?: string;
+        };
+
+        console.error(
+          "START TRIP SAVE ERROR:",
+          JSON.stringify(
+            { code: err.code, message: err.message, details: err.details, hint: err.hint },
+            null,
+            2
+          )
+        );
+
+        setStartTripError("Could not save transport. Please try again.");
+      } finally {
+        setStartingTrip(false);
+      }
+    })();
+  }
+
+  const summaryTransport = useMemo(() => {
+    const knownModes = new Set<string>(TRANSPORT_MODES.map((m) => m.id));
+    const row = transport;
+    const rowMode =
+      row && row.mode && knownModes.has(row.mode)
+        ? (row.mode as TransportMode)
+        : null;
+
+    return {
+      mode: rowMode ?? activeMode,
+      name: row?.transport_name ?? null,
+      number: row?.transport_number ?? null,
+    };
+  }, [transport, activeMode]);
 
   const blocked =
     loadState !== "ready" ||
@@ -2326,6 +2490,28 @@ export default function JourneySetupScreen() {
         allowOffRouteSelect
       />
 
+      {/* Trip summary popup (Step 1.1) */}
+      <TripSummaryModal
+        visible={tripSummaryVisible}
+        destination={trip?.destination ?? null}
+        startDate={trip?.start_date ?? null}
+        endDate={trip?.end_date ?? null}
+        transportMode={summaryTransport.mode}
+        transportName={summaryTransport.name}
+        transportNumber={summaryTransport.number}
+        intermediateCities={stops.map((stop) => stop.city)}
+        placeCount={stops.length}
+        starting={startingTrip}
+        error={startTripError}
+        onClose={() => {
+          if (!startingTrip) {
+            setTripSummaryVisible(false);
+            setStartTripError(null);
+          }
+        }}
+        onStartTrip={handleStartTrip}
+      />
+
       {/* Off-route stop warning — Add Anyway still permitted */}
       <Modal
         animationType="fade"
@@ -2761,6 +2947,9 @@ export default function JourneySetupScreen() {
 }
 
 function DetailRow({ label, value }: { label: string; value: string | null }) {
+  const { theme, dark } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme, dark), [theme, dark]);
+
   return (
     <View style={styles.detailRow}>
       <Text style={styles.detailLabel}>{label}</Text>
@@ -2776,10 +2965,11 @@ function DetailRow({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (theme: ThemeTokens, dark: boolean) =>
+  StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: "#F7F7F9",
+    backgroundColor: theme.background,
   },
   scroll: {
     flex: 1,
@@ -2835,7 +3025,7 @@ const styles = StyleSheet.create({
     color: "#B42318",
   },
   card: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 16,
     padding: 16,
     marginBottom: 16,
@@ -2929,7 +3119,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     paddingVertical: 10,
     paddingHorizontal: 14,
   },
@@ -2949,7 +3139,7 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
   comingSoonCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#F0F1F3",
@@ -2992,7 +3182,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   selectedTransportCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#F0F1F3",
@@ -3084,7 +3274,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   transportActionButtonPressed: {
-    backgroundColor: "#F7F7F9",
+    backgroundColor: theme.surfaceSecondary,
   },
   transportActionText: {
     fontSize: 13,
@@ -3103,7 +3293,7 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   optionCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#F0F1F3",
@@ -3174,7 +3364,7 @@ const styles = StyleSheet.create({
     color: "#08751F",
   },
   findTrainCard: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: "#F0F1F3",
@@ -3330,7 +3520,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -3488,7 +3678,7 @@ const styles = StyleSheet.create({
   warningCard: {
     width: "100%",
     maxWidth: 400,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 20,
     padding: 22,
     alignItems: "center",
@@ -3532,7 +3722,7 @@ const styles = StyleSheet.create({
     minHeight: 48,
   },
   warningCancelButtonPressed: {
-    backgroundColor: "#F7F7F9",
+    backgroundColor: theme.surfaceSecondary,
   },
   warningCancelButtonText: {
     fontSize: 15,
@@ -3544,7 +3734,7 @@ const styles = StyleSheet.create({
     marginTop: 0,
   },
   modalSheet: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: "90%",
@@ -3604,7 +3794,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 14,
     color: "#1C1C1E",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.inputBackground,
   },
   textInputMultiline: {
     textAlignVertical: "top",
@@ -3673,7 +3863,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   detailsSheet: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingBottom: 32,

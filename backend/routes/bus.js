@@ -12,7 +12,11 @@ const express = require("express");
 
 const {
   searchBusRoutes,
-} = require("../services/busSearchService");
+} = require("../services/busService");
+
+const {
+  primaryProvider,
+} = require("../services/webSearchService");
 
 const router = express.Router();
 
@@ -32,12 +36,16 @@ router.get("/search", async (req, res) => {
       });
     }
 
-    const buses = await searchBusRoutes(from, to);
+    const normalizedFrom = String(from).trim();
+    const normalizedTo = String(to).trim();
+
+    const buses = await searchBusRoutes(normalizedFrom, normalizedTo);
 
     return res.json({
       success: true,
-      from: String(from).trim(),
-      to: String(to).trim(),
+      source: primaryProvider,
+      from: normalizedFrom,
+      to: normalizedTo,
       count: buses.length,
       buses,
     });
@@ -46,6 +54,7 @@ router.get("/search", async (req, res) => {
 
     return res.status(502).json({
       success: false,
+      source: primaryProvider,
       error:
         "Bus search is temporarily unavailable.",
     });

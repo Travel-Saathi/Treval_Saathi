@@ -9,6 +9,7 @@ import type {
   PlaceMapStyle,
   RouteLeg,
   RouteLegState,
+  RouteSegment,
 } from "../PlaceMap.types";
 import { getJourneyRoute, resolveCityCoordinates } from "../../services/routeApi";
 import type { RouteAttraction } from "../../services/placesApi";
@@ -26,6 +27,9 @@ interface ResolvedMap {
   region: PlaceMapRegion;
   legs: RouteLeg[];
   nextStopName: string | null;
+  segments: RouteSegment[] | null;
+  warnings: string[];
+  routeLabel: string | null;
 }
 
 function computeRegion(points: JourneyStopMarker[]): PlaceMapRegion {
@@ -113,7 +117,7 @@ export default function MapSection({
   attractions?: RouteAttraction[];
   onAttractionPress?: (attraction: RouteAttraction) => void;
 }) {
-  const { theme } = useAppTheme();
+  const { theme, dark } = useAppTheme();
   const insets = useSafeAreaInsets();
 
   const [mapState, setMapState] = useState<"loading" | "ready" | "error">("loading");
@@ -143,41 +147,78 @@ export default function MapSection({
 
     try {
       const cityNames = activeKey.split("|").filter(Boolean);
-      const points = await Promise.all(cityNames.map((city) => resolveCityCoordinates(city)));
-      const stopMarkers: JourneyStopMarker[] = cityNames.map((city, index) => ({
-        key: `city-${index}`,
-        name: city,
-        latitude: points[index].latitude,
-        longitude: points[index].longitude,
-        kind: index === 0 ? "source" : index === cityNames.length - 1 ? "destination" : "stop",
-      }));
-      const coordinates: CityCoords[] = points.map((point) => ({ latitude: point.latitude, longitude: point.longitude }));
-      const route = await getJourneyRoute(coordinates);
 
-      const originName = (segmentOrigin ?? "").trim().toLowerCase();
-      let activeFrom = cityNames.findIndex((name) => name.trim().toLowerCase() === originName);
-      if (activeFrom < 0) activeFrom = 0;
+      const resolveMapData = async () => {
+        const points = await Promise.all(cityNames.map((city) => resolveCityCoordinates(city)));
 
-      const legs: RouteLeg[] = splitRouteLegs(route.coordinates, stopMarkers).map(
-        (legCoordinates, index) => ({
-          id: `leg-${index}`,
-          coordinates: legCoordinates,
-          state: resolveLegState(index, activeFrom),
-        })
-      );
+        if (points.some((point) => !Number.isFinite(point.latitude) || !Number.isFinite(point.longitude))) {
+          throw new Error("One or more stops have invalid coordinates.");
+        }
 
-      const nextStopName = segmentDestination ?? cityNames[cityNames.length - 1] ?? null;
+        const stopMarkers: JourneyStopMarker[] = cityNames.map((city, index) => ({
+          key: `city-${index}`,
+          name: city,
+          latitude: points[index].latitude,
+          longitude: points[index].longitude,
+          kind: index === 0 ? "source" : index === cityNames.length - 1 ? "destination" : "stop",
+        }));
+        const region = computeRegion(stopMarkers  );
+        return { stopMarkers, region };
+      };
+
+      const { stopMarkers, region } = await resolveMapData();
+
+      // ── Map data is authoritative: markers + region always exist above.
+      // ── Route data is OPTIONAL. Building the route must never make the
+      //    map disappear; on failure we render the map with markers and a
+      //    truthful warning instead.
+      let routeCoordinates: CityCoords[] = [];
+      let routeStats: { distanceKilometers: number | null; durationMinutes: number | null } | null = { distanceKilometers: null, durationMinutes: null };
+      let legs: RouteLeg[] = [];
+      let segments: RouteSegment[] | null = null;
+      let warnings: string[] = [];
+      let routeLabel: string | null = null;
+      let nextStopName = segmentDestination ?? cityNames[cityNames.length - 1] ?? null;
+
+      if (cityNames.length >= 2) {
+        const coordinates: CityCoords[] = stopMarkers.map((marker) => ({
+          latitude: marker.latitude,
+          longitude: marker.longitude,
+        }));
+
+        try {
+          const route = await getJourneyRoute(coordinates);
+
+          if (route.coordinates.length >= 2) {
+            routeCoordinates = route.coordinates;
+            routeStats = {
+              distanceKilometers: route.distanceKilometers,
+              durationMinutes: route.durationMinutes,
+            };
+          } else {
+            throw new Error("Empty road route.");
+          }
+        } catch {
+          // IMPORTANT: do NOT fail the whole map. Render coordinates with a
+          // truthful warning; page-level consumers show the routeLabel.
+          routeCoordinates = coordinates;
+          warnings = ["The route could not be built from live road data. Showing stop locations only."];
+          routeLabel = nextStopName
+            ? `${segmentOrigin ?? "Start"} → ${nextStopName}`
+            : null;
+        }
+      }
 
       const built: ResolvedMap = {
         markers: stopMarkers,
-        routeCoordinates: route.coordinates,
-        routeStats: {
-          distanceKilometers: route.distanceKilometers,
-          durationMinutes: route.durationMinutes,
-        },
-        region: computeRegion(stopMarkers),
+        routeCoordinates,
+        routeStats,
+        region,
         legs,
         nextStopName,
+        segments,
+        warnings,
+        routeLabel,
       };
 
       cacheRef.current[activeKey] = built;
@@ -230,7 +271,12 @@ export default function MapSection({
         <>
           <View style={styles.cardShadow}>
             <View style={[styles.mapWrap, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-              <View style={[styles.mapBody, { height }]}>
+              <View
+                style={[
+                  styles.mapBody,
+                  { height, backgroundColor: dark ? "#1A221C" : "#EDEFF2" },
+                ]}
+              >
                 <PlaceMap
                   places={[]}
                   destination={null}

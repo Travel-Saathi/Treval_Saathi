@@ -4,7 +4,7 @@ const cors = require("cors");
 require("dotenv").config();
 const {
   searchBusRoutes,
-} = require("./services/busSearchService");
+} = require("./services/busService");
 const {
   normalizeOsmPlace,
 } = require("./utils/normalizeOsmPlace");
@@ -33,6 +33,8 @@ app.use("/api/image-search", require("./routes/imageSearch"));
 app.use("/api/city", require("./routes/cityInfo"));
 app.use("/api/city/explore", require("./routes/cityExplore"));
 app.use("/api/route", require("./routes/routeAttractions"));
+app.use("/api/place-details", require("./routes/placeDetails"));
+app.use("/api/saathi", require("./routes/saathi"));
 
 const PORT = process.env.PORT || 5000;
 
@@ -479,6 +481,12 @@ app.get("/api/osm/test", (req, res) => {
     message: "OSM diagnostic route is active",
   });
 });
+
+/* --------------------------------------------------
+   OSM Place Search (Nominatim + Overpass single-element)
+-------------------------------------------------- */
+
+app.use("/api/osm", require("./routes/osmSearch"));
 
 /* --------------------------------------------------
    Weather

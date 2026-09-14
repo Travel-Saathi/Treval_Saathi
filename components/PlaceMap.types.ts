@@ -24,7 +24,7 @@ export interface JourneyStopMarker {
   name: string;
   latitude: number;
   longitude: number;
-  kind: "source" | "stop" | "destination";
+  kind: "source" | "stop" | "destination" | "current" | "next";
 }
 
 /** Progress of one route leg relative to the current journey segment. */
@@ -41,6 +41,21 @@ export interface RouteLeg {
   state: RouteLegState;
 }
 
+/** Independent line style used by the transport-aware route overlay. */
+export type TransportSegmentMode = "transfer" | "train" | "bus" | "car" | "flight";
+
+/** A coloured, independently-styled route portion (transfer or ride). */
+export interface RouteSegment {
+  id: string;
+  kind: "transfer" | "ride";
+  mode: TransportSegmentMode;
+  coordinates: RouteCoordinate[];
+  color: string;
+  label: string;
+  distanceKilometers: number | null;
+  durationMinutes: number | null;
+}
+
 /** Base-map visual style. "road" keeps the street map; "satellite" swaps
  *  the imagery layer while every route/marker overlay stays on top. */
 export type PlaceMapStyle = "road" | "satellite";
@@ -52,6 +67,10 @@ export interface PlaceMapProps {
   initialRegion: PlaceMapRegion;
   onPlacePress?: (place: TravelPlace) => void;
 
+  /** Fired when the user finishes panning/zooming the map. Used by the
+   *  place-discovery mode to refetch nearby results for the new viewport. */
+  onRegionChangeComplete?: (region: PlaceMapRegion) => void;
+
   // Journey mode: stop markers along a planned route + an optional
   // route polyline. When `journeyStops` is provided, the map renders
   // journey mode instead of the place-discovery markers.
@@ -61,6 +80,11 @@ export interface PlaceMapProps {
   // Journey mode: optional per-leg breakdown of `routeCoordinates` so the
   // line can express completed / active / upcoming sections visually.
   routeLegs?: RouteLeg[];
+
+  // Transport-aware mode: independent coloured polylines for each journey
+  // segment (green transfers, blue train/car, red bus, reserved flight).
+  // When provided, takes precedence over `routeCoordinates` / `routeLegs`.
+  routeSegments?: RouteSegment[];
 
   // Journey mode additions: discovered points of interest inside the
   // route corridor. Markers render only for entries with coordinates.

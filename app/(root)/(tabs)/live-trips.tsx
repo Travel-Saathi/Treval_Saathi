@@ -193,7 +193,7 @@ export default function LiveTripsScreen() {
 
       {failed ? (
         <View style={styles.center}>
-          <Ionicons name="cloud-offline-outline" size={40} color="#C4C8CF" />
+          <Ionicons name="cloud-offline-outline" size={40} color={theme.textMuted} />
           <Text style={[styles.centerTitle, { color: theme.text }]}>Unable to load your trips</Text>
           <Text style={[styles.centerText, { color: theme.textSecondary }]}>
             Check your connection and try again.
@@ -231,7 +231,7 @@ export default function LiveTripsScreen() {
 
           {!loading && isEmpty ? (
             <View style={styles.center}>
-              <Ionicons name="map-outline" size={44} color="#C4C8CF" />
+              <Ionicons name="map-outline" size={44} color={theme.textMuted} />
               <Text style={[styles.centerTitle, { color: theme.text }]}>No trips yet</Text>
               <Text style={[styles.centerText, { color: theme.textSecondary }]}>
                 Start planning your next journey with Saathi and it will
@@ -257,7 +257,15 @@ export default function LiveTripsScreen() {
                     <Text style={[styles.sectionLabel, { color: theme.text }]}>
                       {section.label}
                     </Text>
-                    <Text style={styles.sectionCount}>
+                    <Text
+                      style={[
+                        styles.sectionCount,
+                        {
+                          color: theme.primaryDark,
+                          backgroundColor: theme.primaryLight,
+                        },
+                      ]}
+                    >
                       {section.trips.length}
                     </Text>
                   </View>
@@ -285,22 +293,6 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: "#F7F8FA",
-  },
-  header: {
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 12,
-    backgroundColor: "#FFFFFF",
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: "#1C1C1E",
-  },
-  subtitle: {
-    fontSize: 13,
-    color: "#71717A",
-    marginTop: 3,
   },
   scroll: {
     flex: 1,

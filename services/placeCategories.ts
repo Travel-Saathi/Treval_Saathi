@@ -93,6 +93,193 @@ export function toOsmCategories(placeTypeIds: string[]): string[] {
   return mapped;
 }
 
+/* --------------------------------------------------
+   Display helpers (raw category -> user-facing label)
+-------------------------------------------------- */
+
+/**
+ * Raw category values that belong to each app category. The values cover
+ * both the coarse `category` column of the Supabase places table AND the
+ * raw keys `normalizeOsmPlace` produces, so Database and OSM places share
+ * one category system: one chip row, one filter, one label.
+ */
+export const APP_CATEGORY_MATCH: Record<string, string[]> = {
+  hotel: ["hotel", "hostel", "guest_house", "accommodation"],
+  restaurant: ["restaurant", "food"],
+  cafe: ["cafe", "food"],
+  temple: [
+    "place_of_worship",
+    "temple",
+    "religious",
+    "religion",
+    "worship",
+  ],
+  hospital: ["hospital", "healthcare"],
+  pharmacy: ["pharmacy", "healthcare"],
+  "gas-station": ["fuel", "transport"],
+  parking: ["parking", "transport"],
+  "tourist-attraction": [
+    "tourism",
+    "historic",
+    "attraction",
+    "museum",
+    "gallery",
+    "viewpoint",
+    "artwork",
+    "monument",
+    "memorial",
+    "castle",
+    "ruins",
+    "natural",
+    "leisure",
+    "water",
+    "park",
+    "garden",
+    "zoo",
+    "peak",
+    "beach",
+    "wood",
+    "wetland",
+    "recreation",
+    "entertainment",
+  ],
+};
+
+/** Singular user-facing labels for the app category IDs. */
+export const CATEGORY_LABELS: Record<string, string> = {
+  hotel: "Hotel",
+  restaurant: "Restaurant",
+  hospital: "Hospital",
+  "rest-stop": "Rest Stop",
+  "gas-station": "Gas Station",
+  parking: "Parking",
+  cafe: "Cafe",
+  grocery: "Grocery Store",
+  "tourist-attraction": "Tourist Attraction",
+  temple: "Temple",
+  atm: "ATM",
+  pharmacy: "Pharmacy",
+  "car-service": "Car Service",
+};
+
+/** Human-readable labels for raw OSM category keys. */
+export const OSM_CATEGORY_LABELS: Record<string, string> = {
+  tourism: "Tourist Attraction",
+  attraction: "Tourist Attraction",
+  museum: "Tourist Attraction",
+  gallery: "Tourist Attraction",
+  viewpoint: "Tourist Attraction",
+  artwork: "Tourist Attraction",
+  monument: "Monument",
+  memorial: "Memorial",
+  historic: "Historic Place",
+  hotel: "Hotel",
+  hostel: "Hotel",
+  guest_house: "Hotel",
+  restaurant: "Restaurant",
+  cafe: "Cafe",
+  hospital: "Hospital",
+  pharmacy: "Pharmacy",
+  fuel: "Gas Station",
+  parking: "Parking",
+  railway_station: "Railway Station",
+  bus_station: "Bus Station",
+  water: "Water Body",
+  natural: "Natural",
+  leisure: "Leisure",
+  park: "Park",
+  garden: "Garden",
+  zoo: "Zoo",
+  wetland: "Wetland",
+  wood: "Forest",
+  peak: "Peak",
+  beach: "Beach",
+  attraction_park: "Theme Park",
+  shop: "Shop",
+  office: "Office",
+  building: "Building",
+};
+
+/** A place matches an app category when its raw category is one the app
+ * category represents. Works identically for both providers. */
+export function placeMatchesAppCategory(
+  category: string | null,
+  appCategoryId: string
+): boolean {
+  const accepted = APP_CATEGORY_MATCH[appCategoryId];
+
+  if (!accepted) {
+    return false;
+  }
+
+  return accepted.includes(String(category ?? "").toLowerCase());
+}
+
+/** Humanize a raw dotted/segmented category value. */
+export function humanizeCategory(category: string | null): string {
+  if (!category) {
+    return "Place";
+  }
+
+  const segments = category.split(".");
+  const primary = segments.length > 1 ? segments[1] : segments[0];
+
+  const readable = primary
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+
+  return readable || "Place";
+}
+
+function worshipLabel(religion: string | null): string {
+  if (religion === "hindu") {
+    return "Temple";
+  }
+
+  if (religion === "muslim") {
+    return "Mosque";
+  }
+
+  if (religion === "christian") {
+    return "Church";
+  }
+
+  return "Place of Worship";
+}
+
+/** Human-readable label for a raw OSM category value. */
+export function osmCategoryLabel(
+  category: string | null,
+  religion: string | null
+): string {
+  const key = String(category ?? "").toLowerCase();
+
+  if (key === "place_of_worship") {
+    return worshipLabel(religion);
+  }
+
+  return OSM_CATEGORY_LABELS[key] ?? humanizeCategory(category) ?? "Place";
+}
+
+/**
+ * User-facing category label for a place. Uses the first selected app
+ * category the place matches, falling back to its raw OSM label.
+ */
+export function displayCategory(
+  category: string | null,
+  religion: string | null,
+  selectedCategories: string[]
+): string {
+  for (const appCategoryId of selectedCategories) {
+    if (placeMatchesAppCategory(category, appCategoryId)) {
+      return CATEGORY_LABELS[appCategoryId] ?? appCategoryId;
+    }
+  }
+
+  return osmCategoryLabel(category, religion);
+}
+
 /**
  * Maps app category IDs to Geoapify categories.
  *

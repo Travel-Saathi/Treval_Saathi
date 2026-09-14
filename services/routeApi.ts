@@ -227,6 +227,9 @@ export async function getJourneyRoute(
 
 interface ResolvedPoint extends RoutePoint {
   label: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
 }
 
 /**
@@ -287,6 +290,9 @@ export async function resolveCityCoordinates(
     latitude: preferred.latitude,
     longitude: preferred.longitude,
     label: preferred.name ?? trimmed,
+    city: typeof preferred.city === "string" ? preferred.city : null,
+    state: typeof preferred.state === "string" ? preferred.state : null,
+    country: typeof preferred.country === "string" ? preferred.country : null,
   };
 
   coordCache.set(trimmed.toLowerCase(), resolved);

@@ -1,6 +1,9 @@
+import { useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import type { TripActivitiesInfo } from "../../services/tripLiveApi";
+import { useAppTheme } from "../../src/theme/ThemeProvider";
+import type { ThemeTokens } from "../../src/theme/tokens";
 import { SectionTitle } from "./primitives";
 
 /**
@@ -16,6 +19,9 @@ export default function ActivitiesSection({
 }: {
   info?: TripActivitiesInfo | null;
 }) {
+  const { theme, dark } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme, dark), [theme, dark]);
+
   if (!info || (info.planned.length === 0 && info.suggestions.length === 0)) {
     return null;
   }
@@ -54,28 +60,29 @@ export default function ActivitiesSection({
   );
 }
 
-const styles = StyleSheet.create({
-  list: {
-    borderRadius: 16,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    overflow: "hidden",
-  },
-  row: {
-    paddingVertical: 11,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#EEF0F3",
-  },
-  title: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#1C1C1E",
-  },
-  meta: {
-    fontSize: 12,
-    color: "#71717A",
-    marginTop: 1,
-  },
-});
+const createStyles = (theme: ThemeTokens, dark: boolean) =>
+  StyleSheet.create({
+    list: {
+      borderRadius: 16,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      overflow: "hidden",
+    },
+    row: {
+      paddingVertical: 11,
+      paddingHorizontal: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: theme.border,
+    },
+    title: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: theme.text,
+    },
+    meta: {
+      fontSize: 12,
+      color: theme.textSecondary,
+      marginTop: 1,
+    },
+  });

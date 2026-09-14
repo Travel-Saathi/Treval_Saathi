@@ -365,20 +365,49 @@ function parseRunLine(raw) {
 }
 
 /**
+ * Parse the departure and arrival blocks of a train row.
+ *
+ * mNTES renders these in "display:flex" spans. It is enough to parse
+ * the first LEFT (departure) block and the first RIGHT (arrival) block
+ * of the row, e.g.:
+ *
+ *   <span style="text-align: left;width: 25%;">
+ *     <b>23:00</b><br>Bhopal Jn<br><b>BPL</b>
+ *   </span>
+ *
+ * mNTES writes the station code with or without an inner <b> tag
+ * (e.g. "<br><b>BPL</b>" vs "<br>BPL</b>"), depending on the row, so
+ * both forms must be accepted. A leg whose station/time block is
+ * missing or unreadable is reported as null fields - never guessed.
+ */
+const STATION_TIME_BLOCK_PATTERN =
+  /<span style="text-align:\s*(left|right);\s*width:\s*25%;"><b>([^<]*)<\/b><br>([^<]*)<br>\s*(?:<b>)?([A-Z0-9]{2,5})<\/b?>\s*<\/span>/gi;
+
+/**
  * Parse the bottom "display:flex" segment: departure, duration, arrival.
  */
 function parseTrainLeg(chunk) {
-  const depTime = chunk.match(
-    /text-align:\s*left;\s*width: 25%;"><b>([^<]*)<\/b><br>([^<]*)<br>([A-Z0-9]{2,5})/i
-  );
+  let departure = null;
+  let arrival = null;
+
+  for (const match of chunk.matchAll(STATION_TIME_BLOCK_PATTERN)) {
+    const side = match[1].toLowerCase();
+    const block = {
+      time: cleanText(match[2]),
+      station: cleanText(match[3]),
+      code: match[4].toUpperCase(),
+    };
+
+    if (side === "left" && !departure) {
+      departure = block;
+    } else if (side === "right" && !arrival) {
+      arrival = block;
+    }
+  }
 
   const durationMatch =
     chunk.match(/--(\d{1,2}):([0-5]\d)\s*Hrs?\.?--/i) ||
     chunk.match(/--(\d{1,2})\s*Hrs?\.?--/i);
-
-  const arrTime = chunk.match(
-    /text-align:\s*right;\s*width: 25%;"><b>([^<]*)<\/b><br>([^<]*)<br><b>([A-Z0-9]{2,5})<\/b>/i
-  );
 
   let duration = null;
 
@@ -389,13 +418,13 @@ function parseTrainLeg(chunk) {
   }
 
   return {
-    departureTime: depTime ? cleanText(depTime[1]) : null,
-    departureStation: depTime ? cleanText(depTime[2]) : null,
-    departureCode: depTime ? depTime[3].toUpperCase() : null,
+    departureTime: departure ? departure.time : null,
+    departureStation: departure ? departure.station : null,
+    departureCode: departure ? departure.code : null,
     duration,
-    arrivalTime: arrTime ? cleanText(arrTime[1]) : null,
-    arrivalStation: arrTime ? cleanText(arrTime[2]) : null,
-    arrivalCode: arrTime ? arrTime[3].toUpperCase() : null,
+    arrivalTime: arrival ? arrival.time : null,
+    arrivalStation: arrival ? arrival.station : null,
+    arrivalCode: arrival ? arrival.code : null,
   };
 }
 
@@ -442,13 +471,209 @@ function parseBetweenStationsPage(html) {
 }
 
 /* --------------------------------------------------
+   Journey fit (date validity + route check)
+-------------------------------------------------- */
+
+/* INDEX_OF_WEEKDAY follows Date.prototype.getDay(): Sunday=0 .. Saturday=6 */
+const INDEX_OF_WEEKDAY = [
+  "Sun",
+  "Mon",
+  "Tue",
+  "Wed",
+  "Thu",
+  "Fri",
+  "Sat",
+];
+
+/**
+ * Derive the weekday abbreviation (e.g. "Mon") for a DD-MM-YYYY date.
+ * Returns null when the date cannot be interpreted.
+ */
+function weekdayForDate(dmy) {
+  const [day, month, year] = String(dmy).split("-").map(Number);
+
+  if (!day || !month || !year) {
+    return null;
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return INDEX_OF_WEEKDAY[date.getUTCDay()];
+}
+
+/**
+ * Render DD-MM-YYYY as YYYY-MM-DD (used in log lines).
+ */
+function toIsoDate(dmy) {
+  const [day, month, year] = String(dmy).split("-");
+
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Readable running-days label for logs ("Daily" for daily trains).
+ */
+function runningDaysToText(train) {
+  if (train.isDaily === true) {
+    return "Daily";
+  }
+
+  if (Array.isArray(train.runningDays) && train.runningDays.length > 0) {
+    return train.runningDays.join(", ");
+  }
+
+  return "unavailable";
+}
+
+/**
+ * Decide whether a train operates on the given weekday abbreviation.
+ *
+ * - Daily trains always operate.
+ * - Otherwise the weekday must literally appear in runningDays.
+ * - Missing or unparseable runningDays never implies the train runs.
+ */
+function trainOperatesOnDate(train, weekday) {
+  if (train.isDaily === true) {
+    return true;
+  }
+
+  const runningDays = Array.isArray(train.runningDays)
+    ? train.runningDays
+    : [];
+
+  if (runningDays.length === 0) {
+    return false;
+  }
+
+  return runningDays.includes(weekday);
+}
+
+/**
+ * Convert a date to its full weekday name (e.g. "Monday").
+ */
+function weekdayFullName(dmy) {
+  const weekday = weekdayForDate(dmy);
+
+  if (!weekday) {
+    return null;
+  }
+
+  const fullNames = {
+    Sun: "Sunday",
+    Mon: "Monday",
+    Tue: "Tuesday",
+    Wed: "Wednesday",
+    Thu: "Thursday",
+    Fri: "Friday",
+    Sat: "Saturday",
+  };
+
+  return fullNames[weekday];
+}
+
+/**
+ * Reason a train should be dropped because its direct/origin-destination
+ * halts don't match the requested journey endpoints. The between-stations
+ * response only carries the source-side and destination-side halts mNTES
+ * renders for each train, so a train can only be validated when those halts
+ * equal the requested endpoints exactly.
+ *
+ * Returns null (keep) or a human-readable reason (drop).
+ */
+function routeBlockReason(train, { fromCode, toCode, weekday }) {
+  const from = String(fromCode || "").toUpperCase();
+  const to = String(toCode || "").toUpperCase();
+  const trainDep = String(train.departureCode || "").toUpperCase();
+  const trainArr = String(train.arrivalCode || "").toUpperCase();
+
+  if (!trainDep) {
+    return "no departure halt";
+  }
+
+  if (!trainArr) {
+    return "no arrival halt";
+  }
+
+  if (trainDep === from && trainArr === to) {
+    return null;
+  }
+
+  if (train.runningDays && !trainOperatesOnDate(train, weekday)) {
+    return `runs ${runningDaysToText(train)}`;
+  }
+
+  if (train.departureStation && train.arrivalStation) {
+    return `route ${train.departureStation} -> ${train.arrivalStation} (not ${from} -> ${to})`;
+  }
+
+  return `route ${trainDep} -> ${trainArr} (not ${from} -> ${to})`;
+}
+
+/**
+ * Filter parsed rows down to only trains that (a) serve the requested
+ * journey endpoint pair exactly and (b) operate on the requested date.
+ *
+ * Trains whose departure/arrival halts deviate from the requested endpoints
+ * are considered not validated for the leg and are dropped.
+ * Date check: the selected date's weekday must appear in the runningDays
+ * the parser actually extracted; daily trains always pass; missing or
+ * uninterpretable runningDays never implies the train runs.
+ *
+ * Blocked trains are filtered out before the response payload is built, so
+ * they are never returned or exposed.
+ */
+function filterTrainsForJourney(rows, { date, fromCode, toCode }) {
+  const dateIso = toIsoDate(date);
+  const weekday = weekdayForDate(date);
+  const weekdayFull = weekdayFullName(date);
+
+  console.log(`[RailwaySearch] Requested route: ${fromCode} -> ${toCode}`);
+  console.log(`[RailwaySearch] Requested date: ${dateIso}`);
+  console.log(`[RailwaySearch] Requested weekday: ${weekdayFull}`);
+
+  const validRows = rows.filter((train) => {
+    const reason = routeBlockReason(train, { fromCode, toCode, weekday });
+
+    const routeOk = !reason;
+    const dateOk = trainOperatesOnDate(train, weekday);
+
+    console.log(
+      `[RailwaySearch] Train ${train.number}${train.name ? ` ${train.name}` : ""}`.trim()
+    );
+    console.log(
+      `[RailwaySearch]   Route match: ${routeOk ? "PASS" : "FAIL"} (${
+        reason || `route ${fromCode} -> ${toCode}`
+      })`
+    );
+    console.log(
+      `[RailwaySearch]   Date match: ${dateOk ? "PASS" : "FAIL"} (runs ${runningDaysToText(train)})`
+    );
+    console.log(
+      `[RailwaySearch]   Final: ${routeOk && dateOk ? "ALLOWED" : "BLOCKED"}`
+    );
+
+    return routeOk && dateOk;
+  });
+
+  console.log(
+    `[RailwaySearch] ${fromCode} -> ${toCode} on ${dateIso}: ${rows.length} returned, ${validRows.length} valid`
+  );
+
+  return validRows;
+}
+
+/* --------------------------------------------------
    Cache
 -------------------------------------------------- */
 
 const cache = new Map(); // key -> { expiresAt, value }
 
-function cacheKey(fromCode, toCode) {
-  return `${fromCode}:${toCode}`;
+function cacheKey(fromCode, toCode, date) {
+  return `${fromCode}:${toCode}:${date}`;
 }
 
 function cacheGet(key) {
@@ -547,7 +772,7 @@ async function searchBetweenStations({ from, to, date }) {
     );
   }
 
-  const key = cacheKey(fromLabel.code, toLabel.code);
+  const key = cacheKey(fromLabel.code, toLabel.code, normalizedDate);
 
   const cached = cacheGet(key);
 
@@ -604,6 +829,21 @@ async function searchBetweenStations({ from, to, date }) {
 
   const { header, rows } = parseBetweenStationsPage(html);
 
+  /*
+   * Only trains that genuinely serve the requested route on the
+   * requested date may be returned. Route validity is exact
+   * origin/destination equality (see routeBlockReason) and mNTES does not
+   * apply a strict date filter - it reports the running cycle - so the
+   * selected journey date is validated here using the running-day
+   * information the parser actually extracted. A train whose halt pair or
+   * operating days are not confirmed is discarded - never assumed valid.
+   */
+  const validTrains = filterTrainsForJourney(rows, {
+    date: normalizedDate,
+    fromCode: fromLabel.code,
+    toCode: toLabel.code,
+  });
+
   const responseFrom = {
     code: fromLabel.code,
     name: fromLabel.name,
@@ -619,8 +859,8 @@ async function searchBetweenStations({ from, to, date }) {
     from: responseFrom,
     to: responseTo,
     date: normalizedDate,
-    count: rows.length,
-    trains: rows.map((train) => ({
+    count: validTrains.length,
+    trains: validTrains.map((train) => ({
       number: train.number,
       name: train.name,
       from: {

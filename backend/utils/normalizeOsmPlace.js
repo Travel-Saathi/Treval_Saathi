@@ -35,6 +35,14 @@ function normalizeOsmPlace(element) {
     category = "railway_station";
   } else if (tags.amenity === "bus_station") {
     category = "bus_station";
+  } else if (tags.shop) {
+    category = tags.shop;
+  } else if (tags.office) {
+    category = tags.office;
+  } else if (tags.leisure) {
+    category = tags.leisure;
+  } else if (tags.natural) {
+    category = tags.natural;
   }
 
   return {

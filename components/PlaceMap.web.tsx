@@ -15,6 +15,7 @@ import type {
   PlaceMapStyle,
   RouteLeg,
   RouteLegState,
+  RouteSegment,
 } from "./PlaceMap.types";
 import type { RouteAttraction } from "../services/placesApi";
 import { useAppTheme } from "../src/theme/ThemeProvider";
@@ -39,6 +40,11 @@ interface AttractionMarkerEntry {
 
 const TILE_SIZE = 256;
 const ROAD_TILE_BASE_URL = "https://tile.openstreetmap.org";
+// OpenStreetMap raster tiles have no official dark variant, so the basemap
+// stays light in both themes. When a dark GL basemap is available later,
+// point this at the dark tile server and resolve it from `dark` in
+// `tileUrlFor` (no other code changes required).
+const DARK_ROAD_TILE_BASE_URL: string | null = null;
 const SATELLITE_TILE_BASE_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile";
 const MIN_ZOOM = 1;
@@ -300,9 +306,11 @@ export default function PlaceMap({
   selectedPlace,
   initialRegion,
   onPlacePress,
+  onRegionChangeComplete,
   journeyStops,
   routeCoordinates,
   routeLegs,
+  routeSegments,
   attractions,
   onAttractionPress,
   mapStyle = "road",
@@ -315,7 +323,7 @@ export default function PlaceMap({
   const journeyMode =
     Array.isArray(journeyStops) && journeyStops.length > 0;
 
-  const { theme } = useAppTheme();
+  const { theme, dark } = useAppTheme();
 
   const satellite = mapStyle === "satellite";
   const maxZoom = satellite ? SATELLITE_MAX_ZOOM : ROAD_MAX_ZOOM;
@@ -403,6 +411,23 @@ export default function PlaceMap({
       zoom: Math.max(current.zoom, 15),
     }));
   }, [selectedKey, selectedPlace]);
+
+  // Report the current viewport whenever the user pans or zooms, mirroring
+  // the native `onRegionChangeComplete` behavior for place discovery.
+  useEffect(() => {
+    if (!onRegionChangeComplete) {
+      return;
+    }
+
+    const delta = 360 / 2 ** center.zoom;
+
+    onRegionChangeComplete({
+      latitude: center.latitude,
+      longitude: center.longitude,
+      latitudeDelta: delta,
+      longitudeDelta: delta,
+    });
+  }, [center, onRegionChangeComplete]);
 
   const dragRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -547,13 +572,38 @@ export default function PlaceMap({
         ? [{ id: "route", coordinates: routeCoordinates, state: "active" as const }]
         : [];
 
-    const segments: (SegmentStyle & { state: RouteLegState })[] = [];
+    const transportSegments = Array.isArray(routeSegments)
+      ? routeSegments.filter(
+          (segment) =>
+            Array.isArray(segment.coordinates) &&
+            segment.coordinates.length > 1
+        )
+      : [];
+
+    const segments: (SegmentStyle & {
+      state: RouteLegState;
+      color: string;
+    })[] = [];
+
+    for (const segment of transportSegments) {
+      const points = projectCoordinateList(segment.coordinates, center, size);
+
+      for (const drawn of segmentStyles(points)) {
+        segments.push({ ...drawn, state: "active", color: segment.color });
+      }
+    }
 
     for (const leg of legs) {
       const points = projectCoordinateList(leg.coordinates, center, size);
 
-      for (const segment of segmentStyles(points)) {
-        segments.push({ ...segment, state: leg.state });
+      for (const drawn of segmentStyles(points)) {
+        const legColor =
+          leg.state === "active"
+            ? dark
+              ? "#00E33A"
+              : ROUTE_GREEN
+            : LEG_COLORS[leg.state];
+        segments.push({ ...drawn, state: leg.state, color: legColor });
       }
     }
 
@@ -639,14 +689,17 @@ export default function PlaceMap({
       journeyMarkers,
       attractionMarkers,
     };
-  }, [size, center, places, destination, journeyStops, routeCoordinates, routeLegs, journeyMode, attractions]);
+  }, [size, center, places, destination, journeyStops, routeCoordinates, routeLegs, routeSegments, journeyMode, attractions, dark]);
 
   if (!size) {
     return (
-      <View style={styles.fill} onLayout={handleLayout}>
+      <View
+        style={[styles.fill, { backgroundColor: dark ? "#1A221C" : "#EDEFF2" }]}
+        onLayout={handleLayout}
+      >
         <View style={styles.measuring}>
           <ActivityIndicator size="small" color="#00BC26" />
-          <Text style={styles.measuringText}>Loading map...</Text>
+          <Text style={[styles.measuringText, { color: theme.textSecondary }]}>Loading map...</Text>
         </View>
       </View>
     );
@@ -659,7 +712,7 @@ export default function PlaceMap({
   const tilesBlocked = tileFailures.size > 0;
 
   return (
-    <View style={styles.fill} onLayout={handleLayout}>
+    <View style={[styles.fill, { backgroundColor: dark ? "#1A221C" : "#EDEFF2" }]} onLayout={handleLayout}>
       <View
         style={styles.mapLayer}
         onStartShouldSetResponder={() => true}
@@ -675,7 +728,11 @@ export default function PlaceMap({
           return failed ? (
             <View
               key={key}
-              style={[styles.tile, styles.tileEmpty, { left: tile.left, top: tile.top }]}
+              style={[
+                styles.tile,
+                styles.tileEmpty,
+                { backgroundColor: dark ? "#2D3831" : "#E2E5E9", left: tile.left, top: tile.top },
+              ]}
             />
           ) : (
             <Image
@@ -704,7 +761,7 @@ export default function PlaceMap({
                 left: segment.left,
                 top: segment.top,
                 width: segment.width,
-                backgroundColor: LEG_COLORS[segment.state],
+                backgroundColor: segment.color,
                 transform: [
                   {
                     rotateZ: `${segment.angleDeg}deg`,
@@ -820,6 +877,38 @@ export default function PlaceMap({
                     <Text style={[styles.destinationLabelText, { color: theme.text }]}>
                       {nextStopLabel ? "Next Stop" : "Destination"}
                     </Text>
+                  </View>
+                </View>
+              );
+            }
+
+            if (stop.kind === "current") {
+              return (
+                <View
+                  key={stop.key}
+                  style={[styles.markerAnchor, { left: point.x - 17, top: point.y - 45 }]}
+                >
+                  <View style={styles.currentStationMarker}>
+                    <View style={styles.currentStationDot} />
+                  </View>
+                  <View style={[styles.stationLabel, { backgroundColor: theme.surface }]}>
+                    <Text style={[styles.stationLabelText, { color: theme.text }]}>Current</Text>
+                  </View>
+                </View>
+              );
+            }
+
+            if (stop.kind === "next") {
+              return (
+                <View
+                  key={stop.key}
+                  style={[styles.markerAnchor, { left: point.x - 13, top: point.y - 41 }]}
+                >
+                  <View style={styles.nextStationMarker}>
+                    <View style={styles.nextStationDot} />
+                  </View>
+                  <View style={[styles.stationLabel, { backgroundColor: theme.surface }]}>
+                    <Text style={[styles.stationLabelText, { color: theme.text }]}>Next</Text>
                   </View>
                 </View>
               );
@@ -1125,6 +1214,66 @@ const styles = StyleSheet.create({
     height: 9,
     borderRadius: 5,
     backgroundColor: "#00BC26",
+  },
+  currentStationMarker: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: CURRENT_LOCATION_BLUE,
+    borderWidth: 3,
+    borderColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    elevation: 4,
+  },
+  currentStationDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#FFFFFF",
+  },
+  nextStationMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 3,
+    borderColor: CURRENT_LOCATION_BLUE,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    elevation: 3,
+  },
+  nextStationDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: CURRENT_LOCATION_BLUE,
+  },
+  stationLabel: {
+    marginTop: 2,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  stationLabelText: {
+    fontSize: 10,
+    fontWeight: "700",
   },
   attractionMarker: {
     width: 30,

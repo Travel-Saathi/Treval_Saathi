@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, Pressable, View } from "react-native";
 import { formatShortDate } from "../../lib/tripDates";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
@@ -44,6 +44,7 @@ export default function StopsTimeline({
   activeStopCity,
   lifecycle,
   onOpenCity,
+  onExploreCity,
 }: {
   source: string;
   destination: string;
@@ -51,6 +52,7 @@ export default function StopsTimeline({
   activeStopCity?: string | null;
   lifecycle?: "active" | "upcoming" | "completed";
   onOpenCity: (city: string) => void;
+  onExploreCity?: (city: string) => void;
 }) {
   const cities: TimelineCity[] = [
     { key: "source", name: source, kind: "source" },
@@ -144,6 +146,27 @@ export default function StopsTimeline({
                   {city.departure ? `Dep ${formatShortDate(city.departure)}` : ""}
                 </Text>
               ) : null}
+
+              {onExploreCity ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Explore ${city.name}`}
+                  onPress={() => onExploreCity(city.name)}
+                  style={({ pressed }: { pressed: boolean }) => [
+                    styles.exploreButton,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Ionicons
+                    name="map-outline"
+                    size={13}
+                    color="#007A1E"
+                  />
+                  <Text style={styles.exploreButtonText}>
+                    Explore
+                  </Text>
+                </Pressable>
+              ) : null}
             </View>
           </View>
         );
@@ -188,4 +211,19 @@ const styles = StyleSheet.create({
   },
   currentBadgeText: { fontSize: 9, fontWeight: "800", color: "#0369A1", letterSpacing: 0.4 },
   cityDates: { marginTop: 2, fontSize: 11, color: "#71717A" },
+  exploreButton: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "#E7F9EB",
+    borderWidth: 1,
+    borderColor: "#BEEBC5",
+  },
+  exploreButtonText: { fontSize: 12, fontWeight: "700", color: "#007A1E" },
+  pressed: { opacity: 0.7 },
 });

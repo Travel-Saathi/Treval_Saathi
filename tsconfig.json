@@ -16,6 +16,17 @@
     "**/*.ts",
     "**/*.tsx",
     ".expo/types/**/*.ts",
-    "expo-env.d.ts"
-, "app/(root)/(tabs)/_layout.jsx"  ]
+    "expo-env.d.ts",
+    "app/(root)/(tabs)/_layout.jsx"
+  ],
+  "exclude": [
+    "src/_expo_starter_template",
+    "src/components",
+    "src/components/ui",
+    "src/hooks",
+    "src/constants",
+    "src/ui",
+    "SignUpScreen.tsx",
+    "node_modules"
+  ]
 }

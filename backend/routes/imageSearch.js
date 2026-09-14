@@ -4,6 +4,21 @@ const router = express.Router();
 
 const SERPER_IMAGE_API_URL = "https://google.serper.dev/images";
 
+const SERPER_IMAGE_TIMEOUT_MS = clampTimeout(
+  process.env.SERPER_IMAGE_TIMEOUT_MS,
+  8000
+);
+
+function clampTimeout(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1000) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
 router.get("/", async (req, res) => {
   try {
     const { q } = req.query;
@@ -16,9 +31,9 @@ router.get("/", async (req, res) => {
     }
 
     if (!process.env.SERPER_API_KEY) {
-      return res.status(500).json({
+      return res.status(502).json({
         success: false,
-        error: "SERPER_API_KEY is not configured",
+        error: "Image search is temporarily unavailable.",
       });
     }
 
@@ -34,6 +49,7 @@ router.get("/", async (req, res) => {
         hl: "en",
         num: 10,
       }),
+      signal: AbortSignal.timeout(SERPER_IMAGE_TIMEOUT_MS),
     });
 
     if (!response.ok) {

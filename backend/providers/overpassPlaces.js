@@ -223,6 +223,33 @@ async function fetchEndpoint(endpoint, query, timeoutMs = PER_ENDPOINT_TIMEOUT_M
 }
 
 /* --------------------------------------------------
+   Single query across endpoints sequentially.
+   Returns the first successful response or throws when
+   every endpoint fails.
+-------------------------------------------------- */
+
+async function fetchFirstAvailable(query) {
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      return await fetchEndpoint(endpoint, query);
+    } catch (error) {
+      const isAbort =
+        error?.name === "AbortError";
+
+      console.error(
+        `[Overpass] endpoint=${endpoint.name} failed ${isAbort ? "(timeout)" : ""} ${error?.message || error}`
+      );
+
+      console.log(
+        `[Overpass] trying next endpoint...`
+      );
+    }
+  }
+
+  throw new Error("All Overpass endpoints failed");
+}
+
+/* --------------------------------------------------
    Query one category across endpoints sequentially
 -------------------------------------------------- */
 
@@ -240,37 +267,73 @@ async function queryCategoryWithFallback({
     radius,
   });
 
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const data = await fetchEndpoint(endpoint, query);
+  try {
+    const data = await fetchFirstAvailable(query);
 
-      const elapsed = Date.now() - startTime;
+    const elapsed = Date.now() - startTime;
 
-      console.log(
-        `[Overpass] category=${category} radius=${radius} endpoint=${endpoint.name} elapsed=${elapsed}ms results=${(data.elements || []).length}`
-      );
+    console.log(
+      `[Overpass] category=${category} radius=${radius} elapsed=${elapsed}ms results=${(data.elements || []).length}`
+    );
 
-      return data;
-    } catch (error) {
-      const elapsed = Date.now() - startTime;
-      const isAbort =
-        error?.name === "AbortError";
+    return data;
+  } catch (error) {
+    const elapsed = Date.now() - startTime;
 
-      console.error(
-        `[Overpass] category=${category} endpoint=${endpoint.name} failed elapsed=${elapsed}ms ${isAbort ? "(timeout)" : ""} ${error?.message || error}`
-      );
+    console.error(
+      `[Overpass] category=${category} ALL endpoints failed elapsed=${elapsed}ms ${error?.message || error}`
+    );
 
-      console.log(
-        `[Overpass] category=${category} trying next endpoint...`
-      );
-    }
+    return { elements: [] };
+  }
+}
+
+/* --------------------------------------------------
+   Single OSM element fetch (named place resolution)
+-------------------------------------------------- */
+
+/**
+ * Fetch one OSM element by reference through the same endpoint fallback
+ * list. Used by OSM Search: a Nominatim hit yields `osm_type`/`osm_id`,
+ * and this returns the full Overpass element so the existing
+ * normalizeOsmPlace() can produce a normal TravelPlace.
+ *
+ * Returns null when the reference is invalid or no endpoint resolves it.
+ */
+async function fetchOverpassElement({ osmType, osmId }) {
+  const type = ["node", "way", "relation"].includes(osmType)
+    ? osmType
+    : null;
+  const id = Number(osmId);
+
+  if (!type || !Number.isInteger(id) || id <= 0) {
+    return null;
   }
 
-  console.error(
-    `[Overpass] category=${category} ALL endpoints failed`
-  );
+  const query =
+    `[out:json][timeout:8];` +
+    `(${type}(${id}););` +
+    `out center tags;`;
 
-  return { elements: [] };
+  try {
+    const data = await fetchFirstAvailable(query);
+
+    const element = (data.elements || [])[0];
+
+    if (!element) {
+      console.warn(
+        `[Overpass] element ${type}/${id} not found`
+      );
+      return null;
+    }
+
+    return element;
+  } catch (error) {
+    console.error(
+      `[Overpass] element ${type}/${id} failed: ${error?.message || error}`
+    );
+    return null;
+  }
 }
 
 /* --------------------------------------------------
@@ -361,4 +424,5 @@ async function searchOverpassPlaces({
 module.exports = {
   searchOverpassPlaces,
   normalizeOsmCategories,
+  fetchOverpassElement,
 };

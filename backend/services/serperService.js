@@ -1,5 +1,24 @@
 const SERPER_API_URL = "https://google.serper.dev/search";
 
+/*
+ * Serper calls must never hang the backend: abort if the upstream does not
+ * respond. Default is 8s; override with SERPER_REQUEST_TIMEOUT_MS.
+ */
+const SERPER_REQUEST_TIMEOUT_MS = clampTimeout(
+  process.env.SERPER_REQUEST_TIMEOUT_MS,
+  8000
+);
+
+function clampTimeout(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1000) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
 async function searchWithSerper(query, options = {}) {
   if (!process.env.SERPER_API_KEY) {
     throw new Error("SERPER_API_KEY is not configured");
@@ -9,35 +28,47 @@ async function searchWithSerper(query, options = {}) {
     throw new Error("Search query is required");
   }
 
-  const response = await fetch(SERPER_API_URL, {
-    method: "POST",
-    headers: {
-      "X-API-KEY": process.env.SERPER_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      q: String(query).trim(),
-      gl: options.gl || "in",
-      hl: options.hl || "en",
-      num: options.num || 10,
-    }),
-  });
+  const controller = new AbortController();
 
-  if (!response.ok) {
-    const errorText = await response.text();
+  const timer = setTimeout(
+    () => controller.abort(),
+    SERPER_REQUEST_TIMEOUT_MS
+  );
 
-    const error = new Error(
-      `Serper API error ${response.status}: ${errorText}`
-    );
+  try {
+    const response = await fetch(SERPER_API_URL, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": process.env.SERPER_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        q: String(query).trim(),
+        gl: options.gl || "in",
+        hl: options.hl || "en",
+        num: options.num || 10,
+      }),
+      signal: controller.signal,
+    });
 
-    if (response.status === 429 || response.status === 503) {
-      error.code = "rate-limited";
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      const error = new Error(
+        `Serper API error ${response.status}: ${errorText}`
+      );
+
+      if (response.status === 429 || response.status === 503) {
+        error.code = "rate-limited";
+      }
+
+      throw error;
     }
 
-    throw error;
+    return response.json();
+  } finally {
+    clearTimeout(timer);
   }
-
-  return response.json();
 }
 
 /**

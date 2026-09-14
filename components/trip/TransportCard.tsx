@@ -1,7 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, Text, View } from "react-native";
+import { buildLiveTrainStatus } from "../../services/liveTrainStatusApi";
 import { MODE_LABELS, TRANSPORT_MODES, type TransportMode } from "../../services/transportApi";
 import type { TripTransport } from "../../services/tripsApi";
+import LiveTrainStatusCard from "./LiveTrainStatusCard";
 
 type IoniconName = keyof typeof Ionicons.glyphMap;
 
@@ -19,11 +21,15 @@ export default function TransportCard({
   segmentOrigin,
   segmentDestination,
   onOpenCity,
+  journeyCities,
+  isCurrentLeg,
 }: {
   transport: TripTransport;
   segmentOrigin?: string | null;
   segmentDestination?: string | null;
   onOpenCity?: (city: string) => void;
+  journeyCities?: string[];
+  isCurrentLeg?: boolean;
 }) {
   const mode = (transport.mode ?? null) as TransportMode | null;
   const icon = modeIcon(transport.mode);
@@ -46,6 +52,19 @@ export default function TransportCard({
 
   const displayOrigin = matchesSegment ? depCity : segmentOrigin ?? depCity;
   const displayDestination = matchesSegment ? arrCity : segmentDestination ?? arrCity;
+
+  const currentStation =
+    isCurrentLeg
+      ? segmentOrigin?.trim() ?? depCity
+      : depCity;
+
+  const liveStatus =
+    mode === "train"
+      ? buildLiveTrainStatus(transport, {
+          journeyCities: journeyCities ?? [],
+          currentStation,
+        })
+      : null;
 
   const detailLines: { icon: IoniconName; text: string }[] = [];
   if (duration) detailLines.push({ icon: "time-outline", text: duration });
@@ -92,6 +111,11 @@ export default function TransportCard({
           </View>
         ))}
       </View>
+      {liveStatus ? (
+        <View style={styles.liveStatusWrap}>
+          <LiveTrainStatusCard status={liveStatus} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -112,4 +136,5 @@ const styles = StyleSheet.create({
   details: { gap: 7 },
   detailRow: { flexDirection: "row", alignItems: "center", gap: 7 },
   detailText: { flex: 1, fontSize: 13, color: "#3F3F46" },
+  liveStatusWrap: { marginTop: 14 },
 });

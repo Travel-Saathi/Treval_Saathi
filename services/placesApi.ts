@@ -74,7 +74,7 @@ export interface TravelPlace {
 
   isOpen: boolean | null;
 
-  source: "osm" | "geoapify" | "foursquare" | "merged";
+  source: "database" | "osm" | "geoapify" | "foursquare" | "merged";
 
   osmType?: string;
   osmId?: number | string;
@@ -363,6 +363,75 @@ export async function getOsmPlaces({
       normalizeOsmToTravelPlace(raw, latitude, longitude)
     )
     .filter((place): place is TravelPlace => place !== null);
+}
+
+/** The Overpass endpoint accepts at most three categories per request. */
+const OSM_CATEGORIES_PER_QUERY = 3;
+
+/**
+ * Fetch OSM places for any number of app categories.
+ *
+ * The existing Overpass endpoint caps a query at three categories, so a
+ * larger selection is split into batches and the results are merged
+ * (de-duplicated, nearest first). This is a thin caller of the single
+ * existing `getOsmPlaces` implementation — there is no second OSM code
+ * path. Batches that fail are tolerated as long as at least one succeeds.
+ */
+export async function getOsmPlacesForCategories(
+  params: GetOsmPlacesParams
+): Promise<TravelPlace[]> {
+  if (params.categories.length <= OSM_CATEGORIES_PER_QUERY) {
+    return getOsmPlaces(params);
+  }
+
+  const batches: string[][] = [];
+
+  for (
+    let index = 0;
+    index < params.categories.length;
+    index += OSM_CATEGORIES_PER_QUERY
+  ) {
+    batches.push(
+      params.categories.slice(index, index + OSM_CATEGORIES_PER_QUERY)
+    );
+  }
+
+  const settled = await Promise.allSettled(
+    batches.map((batch) => getOsmPlaces({ ...params, categories: batch }))
+  );
+
+  const fulfilled = settled.filter(
+    (result): result is PromiseFulfilledResult<TravelPlace[]> =>
+      result.status === "fulfilled"
+  );
+
+  if (fulfilled.length === 0) {
+    const firstError = settled.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected"
+    );
+
+    throw firstError ? firstError.reason : new Error("OSM places request failed");
+  }
+
+  const byKey = new Map<string, TravelPlace>();
+
+  for (const result of fulfilled) {
+    for (const place of result.value) {
+      const key =
+        place.id ||
+        `${place.name ?? ""}-${place.latitude}-${place.longitude}`;
+
+      if (!byKey.has(key)) {
+        byKey.set(key, place);
+      }
+    }
+  }
+
+  return Array.from(byKey.values()).sort(
+    (first, second) =>
+      (first.distanceMeters ?? Infinity) - (second.distanceMeters ?? Infinity)
+  );
 }
 
 /* --------------------------------------------------

@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { weatherConditionLabel, dailyWeatherSummary } from "../../lib/weatherLabels";
@@ -14,11 +15,13 @@ export default function WeatherCard({
   coords,
   compact,
   onOpenCity,
+  onExploreCity,
 }: {
   city: string;
   coords?: CityCoords | null;
   compact?: boolean;
   onOpenCity?: (city: string) => void;
+  onExploreCity?: (city: string) => void;
 }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
@@ -74,6 +77,20 @@ export default function WeatherCard({
                 {Math.round(today.temperatureMax)}° / {Math.round(today.temperatureMin)}°
               </Text>
             ) : null}
+          </Pressable>
+        ) : null}
+        {onExploreCity ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Explore ${city}`}
+            onPress={() => onExploreCity(city)}
+            style={({ pressed }) => [
+              styles.compactExplore,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Ionicons name="map-outline" size={12} color="#007A1E" />
+            <Text style={styles.compactExploreText}>Explore</Text>
           </Pressable>
         ) : null}
       </View>
@@ -178,5 +195,20 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: "#9CA3AF",
     marginTop: 2,
+  },
+  compactExplore: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingVertical: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#F1F3F5",
+    backgroundColor: "#F9FBF9",
+  },
+  compactExploreText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#007A1E",
   },
 });

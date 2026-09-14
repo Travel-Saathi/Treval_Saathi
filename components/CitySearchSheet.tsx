@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -12,6 +12,8 @@ import {
 } from "react-native";
 
 import { searchLocation } from "../services/locationApi";
+import { useAppTheme } from "../src/theme/ThemeProvider";
+import type { ThemeTokens } from "../src/theme/tokens";
 
 export interface CitySelection {
   id: string;
@@ -73,6 +75,9 @@ export default function CitySearchSheet({
   recommendations = [],
   allowOffRouteSelect = false,
 }: CitySearchSheetProps) {
+  const { theme, dark } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme, dark), [theme, dark]);
+
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CitySelection[]>([]);
   const [loading, setLoading] = useState(false);
@@ -236,7 +241,7 @@ export default function CitySearchSheet({
                 pressed && styles.closeButtonPressed,
               ]}
             >
-              <Ionicons name="close" size={20} color="#1C1C1E" />
+              <Ionicons name="close" size={20} color={theme.icon} />
             </Pressable>
           </View>
 
@@ -244,14 +249,14 @@ export default function CitySearchSheet({
             <Ionicons
               name="search"
               size={20}
-              color="#6B7280"
+              color={theme.textSecondary}
               style={styles.searchIcon}
             />
 
             <TextInput
               style={styles.searchInput}
               placeholder="Search city or place..."
-              placeholderTextColor="#9CA1A9"
+              placeholderTextColor={theme.textMuted}
               value={search}
               onChangeText={setSearch}
               autoCapitalize="words"
@@ -263,7 +268,7 @@ export default function CitySearchSheet({
             {loading && (
               <ActivityIndicator
                 size="small"
-                color="#00BC26"
+                color={theme.primary}
                 style={styles.searchLoader}
               />
             )}
@@ -278,14 +283,14 @@ export default function CitySearchSheet({
                 }}
                 style={styles.clearButton}
               >
-                <Ionicons name="close-circle" size={18} color="#B0B5BC" />
+                <Ionicons name="close-circle" size={18} color={theme.textMuted} />
               </Pressable>
             )}
           </View>
 
           {loading ? (
             <View style={styles.loadingState}>
-              <ActivityIndicator size="large" color="#00BC26" />
+              <ActivityIndicator size="large" color={theme.primary} />
               <Text style={styles.loadingText}>Searching...</Text>
             </View>
           ) : (
@@ -313,40 +318,40 @@ export default function CitySearchSheet({
                           pressed && styles.resultPressed,
                         ]}
                       >
-                        <View style={styles.recommendationIcon}>
-                          <Ionicons
-                            name="star"
-                            size={18}
-                            color="#B45309"
-                          />
-                        </View>
-
-                        <View style={styles.resultBody}>
-                          <Text style={styles.resultName}>{item.name}</Text>
-
-                          <Text
-                            style={styles.resultAddress}
-                            numberOfLines={2}
-                          >
-                            {item.formatted}
-                          </Text>
-
-                          <View style={styles.validationBadge}>
+<View style={styles.recommendationIcon}>
                             <Ionicons
-                              name="checkmark-circle"
-                              size={14}
-                              color="#08751F"
+                              name="star"
+                              size={18}
+                              color={theme.warning}
                             />
-                            <Text style={styles.validationOk}>
-                              On your route
-                            </Text>
                           </View>
-                        </View>
+
+                          <View style={styles.resultBody}>
+                            <Text style={styles.resultName}>{item.name}</Text>
+
+                            <Text
+                              style={styles.resultAddress}
+                              numberOfLines={2}
+                            >
+                              {item.formatted}
+                            </Text>
+
+                            <View style={styles.validationBadge}>
+                              <Ionicons
+                                name="checkmark-circle"
+                                size={14}
+                                color={theme.primaryDark}
+                              />
+                              <Text style={styles.validationOk}>
+                                On your route
+                              </Text>
+                            </View>
+                          </View>
 
                         <Ionicons
                           name="chevron-forward"
                           size={18}
-                          color="#C3C7CD"
+                          color={theme.textMuted}
                         />
                       </Pressable>
                     ))}
@@ -355,7 +360,7 @@ export default function CitySearchSheet({
                       <Ionicons
                         name="search-outline"
                         size={16}
-                        color="#6B7280"
+                        color={theme.textSecondary}
                       />
                       <Text style={styles.searchAnotherText}>
                         Search another city
@@ -409,10 +414,10 @@ export default function CitySearchSheet({
                         size={20}
                         color={
                           ok
-                            ? "#00BC26"
+                            ? theme.primary
                             : allowOffRouteSelect
-                              ? "#B45309"
-                              : "#9CA1A9"
+                              ? theme.warning
+                              : theme.textMuted
                         }
                       />
                     </View>
@@ -429,7 +434,7 @@ export default function CitySearchSheet({
                           <View style={styles.validationBadge}>
                             <ActivityIndicator
                               size="small"
-                              color="#6B7280"
+                              color={theme.textSecondary}
                             />
                             <Text style={styles.validationPending}>
                               Checking your route...
@@ -451,7 +456,7 @@ export default function CitySearchSheet({
                             <Ionicons
                               name="alert-circle"
                               size={14}
-                              color="#B42318"
+                              color={theme.danger}
                             />
                             <Text style={styles.validationNo}>
                               {reason ?? "Not on your route"}
@@ -461,7 +466,7 @@ export default function CitySearchSheet({
                       ) : null}
                     </View>
 
-                    <Ionicons name="chevron-forward" size={18} color="#C3C7CD" />
+                    <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
                   </Pressable>
                 );
               }}
@@ -473,15 +478,15 @@ export default function CitySearchSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (theme: ThemeTokens, dark: boolean) => StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: theme.overlay,
     justifyContent: "flex-end",
   },
 
   sheet: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     maxHeight: "88%",
@@ -500,7 +505,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 19,
     fontWeight: "800",
-    color: "#1C1C1E",
+    color: theme.text,
     letterSpacing: -0.3,
   },
 
@@ -508,22 +513,22 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: theme.background,
     alignItems: "center",
     justifyContent: "center",
   },
 
   closeButtonPressed: {
-    backgroundColor: "#E8EAEC",
+    backgroundColor: theme.surfaceSecondary,
   },
 
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F6F8F6",
+    backgroundColor: theme.surfaceSecondary,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#E3EAE5",
+    borderColor: theme.border,
     paddingHorizontal: 14,
     minHeight: 50,
     marginBottom: 14,
@@ -537,7 +542,7 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 48,
     fontSize: 15,
-    color: "#1C1C1E",
+    color: theme.text,
   },
 
   searchLoader: {
@@ -558,7 +563,7 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 12,
     fontSize: 14,
-    color: "#6B7280",
+    color: theme.textSecondary,
   },
 
   list: {
@@ -573,7 +578,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 14,
     lineHeight: 20,
-    color: "#9CA1A9",
+    color: theme.textMuted,
     paddingVertical: 30,
     paddingHorizontal: 20,
   },
@@ -581,17 +586,17 @@ const styles = StyleSheet.create({
   result: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
+    backgroundColor: theme.surface,
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: "#F0F1F3",
+    borderColor: theme.border,
   },
 
   resultPressed: {
-    backgroundColor: "#F3F4F6",
+    backgroundColor: theme.background,
   },
 
   resultDisabled: {
@@ -602,14 +607,14 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "#E7F9EB",
+    backgroundColor: theme.primaryLight,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
   },
 
   resultIconDisabled: {
-    backgroundColor: "#F0F1F3",
+    backgroundColor: theme.surfaceSecondary,
   },
 
   resultBody: {
@@ -619,14 +624,14 @@ const styles = StyleSheet.create({
   resultName: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#1C1C1E",
+    color: theme.text,
   },
 
   resultAddress: {
     marginTop: 2,
     fontSize: 12,
     lineHeight: 17,
-    color: "#6B7280",
+    color: theme.textSecondary,
   },
 
   validationBadge: {
@@ -639,13 +644,13 @@ const styles = StyleSheet.create({
   validationPending: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#6B7280",
+    color: theme.textSecondary,
   },
 
   validationOk: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#08751F",
+    color: theme.primaryDark,
   },
 
   recommendationsBlock: {
@@ -655,7 +660,7 @@ const styles = StyleSheet.create({
   recommendationsTitle: {
     fontSize: 13,
     fontWeight: "800",
-    color: "#1C1C1E",
+    color: theme.text,
     marginBottom: 10,
   },
 
@@ -663,7 +668,7 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "#FEF3C7",
+    backgroundColor: dark ? "rgba(245,158,11,0.14)" : "#FEF3C7",
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
@@ -677,19 +682,19 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginTop: 2,
     borderTopWidth: 1,
-    borderTopColor: "#F0F1F3",
+    borderTopColor: theme.border,
   },
 
   searchAnotherText: {
     fontSize: 14,
     fontWeight: "700",
-    color: "#6B7280",
+    color: theme.textSecondary,
   },
 
   validationNo: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#B42318",
+    color: theme.danger,
     flexShrink: 1,
   },
 });

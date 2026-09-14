@@ -118,13 +118,16 @@ function clampInt(value, min, max, fallback) {
 function normalizeCacheKey(query, options) {
   const engine = options.engine || "google";
   const num = Number.parseInt(String(options.num ?? 10), 10);
+  const extract = Number.parseInt(String(options.extract ?? "0"), 10);
 
   const text = String(query || "")
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
 
-  return `${engine}/${Number.isFinite(num) ? num : 10}/${text}`;
+  return `${engine}/${Number.isFinite(num) ? num : 10}/${
+    Number.isFinite(extract) ? extract : 0
+  }/${text}`;
 }
 
 function getCached(key) {
@@ -338,6 +341,8 @@ function normalizeResults(raw) {
     rating: result.rating || null,
     ratingCount: result.ratingCount || null,
     date: result.date || null,
+    type: result.type || null,
+    extracted: result.extracted || null,
   }));
 
   return {

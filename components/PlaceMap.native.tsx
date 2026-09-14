@@ -8,6 +8,7 @@ import type {
   PlaceMapStyle,
   RouteLeg,
   RouteLegState,
+  RouteSegment,
 } from "./PlaceMap.types";
 import { useAppTheme } from "../src/theme/ThemeProvider";
 
@@ -17,18 +18,6 @@ const ROUTE_GREEN_UPCOMING = "#46D37A";
 const ROUTE_COMPLETED = "rgba(0, 188, 38, 0.32)";
 const ROUTE_CASING = "#FFFFFF";
 const CURRENT_LOCATION_BLUE = "#1287F5";
-
-const LEG_COLORS: Record<RouteLegState, string> = {
-  completed: ROUTE_COMPLETED,
-  active: ROUTE_GREEN,
-  upcoming: ROUTE_GREEN_UPCOMING,
-};
-
-const LEG_OUTLINES: Record<RouteLegState, string> = {
-  completed: "rgba(80, 140, 100, 0.3)",
-  active: ROUTE_GREEN_DARK,
-  upcoming: ROUTE_GREEN_DARK,
-};
 
 const ROUTE_UNDERLAY_WIDTH = 11;
 const ROUTE_CASING_WIDTH = 8.5;
@@ -49,9 +38,11 @@ export default function PlaceMap({
   selectedPlace,
   initialRegion,
   onPlacePress,
+  onRegionChangeComplete,
   journeyStops,
   routeCoordinates,
   routeLegs,
+  routeSegments,
   attractions,
   onAttractionPress,
   mapStyle = "road",
@@ -62,7 +53,7 @@ export default function PlaceMap({
   bottomInset = 0,
 }: PlaceMapProps) {
   const mapRef = useRef<MapView>(null);
-  const { theme } = useAppTheme();
+  const { theme, dark } = useAppTheme();
 
   const journeyMode = Array.isArray(journeyStops) && journeyStops.length > 0;
   const satellite = mapStyle === "satellite";
@@ -78,6 +69,26 @@ export default function PlaceMap({
     [theme, satellite]
   );
 
+  // Route is kept high-contrast in both themes: bright green (#00E33A) on
+  // dark basemaps, Travel Saathi green (#00BC26) on light basemaps.
+  const routeColors = useMemo<Record<RouteLegState, string>>(
+    () => ({
+      completed: dark ? "rgba(0, 227, 58, 0.30)" : ROUTE_COMPLETED,
+      active: dark ? "#00E33A" : ROUTE_GREEN,
+      upcoming: ROUTE_GREEN_UPCOMING,
+    }),
+    [dark]
+  );
+
+  const routeOutlines = useMemo<Record<RouteLegState, string>>(
+    () => ({
+      completed: dark ? "rgba(0, 227, 58, 0.18)" : "rgba(80, 140, 100, 0.3)",
+      active: dark ? "#0B7A1E" : ROUTE_GREEN_DARK,
+      upcoming: dark ? "#0B7A1E" : ROUTE_GREEN_DARK,
+    }),
+    [dark]
+  );
+
   const legs = useMemo<RouteLeg[]>(() => {
     if (hasRouteLegs(routeLegs)) return routeLegs;
     if (Array.isArray(routeCoordinates) && routeCoordinates.length > 1) {
@@ -85,6 +96,17 @@ export default function PlaceMap({
     }
     return [];
   }, [routeLegs, routeCoordinates]);
+
+  const transportSegments = useMemo<RouteSegment[]>(() => {
+    if (!Array.isArray(routeSegments) || routeSegments.length === 0) {
+      return [];
+    }
+
+    return routeSegments.filter(
+      (segment) =>
+        Array.isArray(segment.coordinates) && segment.coordinates.length > 1
+    );
+  }, [routeSegments]);
 
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -199,8 +221,35 @@ export default function PlaceMap({
         style={StyleSheet.absoluteFillObject}
         initialRegion={initialRegion}
         mapType={satellite ? "hybrid" : "standard"}
+        onRegionChangeComplete={onRegionChangeComplete}
       >
-        {journeyMode && drawLegs.length > 0 && (
+        {journeyMode && transportSegments.length > 0 && (
+          <>
+            {transportSegments.map((segment) => (
+              <Polyline
+                key={`${segment.id}-casing`}
+                coordinates={segment.coordinates}
+                strokeColor={ROUTE_CASING}
+                strokeWidth={ROUTE_CASING_WIDTH}
+                lineCap="round"
+                lineJoin="round"
+              />
+            ))}
+
+            {transportSegments.map((segment) => (
+              <Polyline
+                key={`${segment.id}-main`}
+                coordinates={segment.coordinates}
+                strokeColor={segment.color}
+                strokeWidth={ROUTE_MAIN_WIDTH}
+                lineCap="round"
+                lineJoin="round"
+              />
+            ))}
+          </>
+        )}
+
+        {journeyMode && transportSegments.length === 0 && drawLegs.length > 0 && (
           <>
             {drawLegs.map((leg) => (
               <Polyline
@@ -217,7 +266,7 @@ export default function PlaceMap({
               <Polyline
                 key={`${leg.id}-main`}
                 coordinates={leg.coordinates}
-                strokeColor={LEG_COLORS[leg.state]}
+                strokeColor={routeColors[leg.state]}
                 strokeWidth={ROUTE_MAIN_WIDTH}
                 lineCap="round"
                 lineJoin="round"
@@ -228,7 +277,7 @@ export default function PlaceMap({
               <Polyline
                 key={`${leg.id}-underlay`}
                 coordinates={leg.coordinates}
-                strokeColor={LEG_OUTLINES[leg.state]}
+                strokeColor={routeOutlines[leg.state]}
                 strokeWidth={ROUTE_UNDERLAY_WIDTH}
                 lineCap="round"
                 lineJoin="round"
@@ -336,6 +385,76 @@ export default function PlaceMap({
                     >
                       <Text style={[styles.destinationLabelText, { color: controlTones.text }]}>
                         {nextStopLabel ? "Next Stop" : "Destination"}
+                      </Text>
+                    </View>
+                  </View>
+                </Marker>
+              );
+            }
+
+            if (stop.kind === "current") {
+              return (
+                <Marker
+                  key={stop.key}
+                  coordinate={{
+                    latitude: stop.latitude,
+                    longitude: stop.longitude,
+                  }}
+                  title={stop.name}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                >
+                  <View style={styles.currentStationWrap}>
+                    <View style={styles.currentStationMarker}>
+                      <View style={styles.currentStationDot} />
+                    </View>
+                    <View
+                      style={[
+                        styles.stationLabel,
+                        { backgroundColor: controlTones.pillBg },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.stationLabelText,
+                          { color: controlTones.text },
+                        ]}
+                      >
+                        Current
+                      </Text>
+                    </View>
+                  </View>
+                </Marker>
+              );
+            }
+
+            if (stop.kind === "next") {
+              return (
+                <Marker
+                  key={stop.key}
+                  coordinate={{
+                    latitude: stop.latitude,
+                    longitude: stop.longitude,
+                  }}
+                  title={stop.name}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                >
+                  <View style={styles.nextStationWrap}>
+                    <View style={styles.nextStationMarker}>
+                      <View style={styles.nextStationDot} />
+                    </View>
+                    <View
+                      style={[
+                        styles.stationLabel,
+                        { backgroundColor: controlTones.pillBg },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.stationLabelText,
+                          { color: controlTones.text },
+                        ]}
+                      >
+                        Next
                       </Text>
                     </View>
                   </View>
@@ -640,6 +759,72 @@ const styles = StyleSheet.create({
     height: 9,
     borderRadius: 5,
     backgroundColor: "#00BC26",
+  },
+  currentStationWrap: {
+    alignItems: "center",
+  },
+  currentStationMarker: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: CURRENT_LOCATION_BLUE,
+    borderWidth: 3,
+    borderColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    shadowOffset: {
+      width: 0,
+      height: 3,
+    },
+    elevation: 5,
+  },
+  currentStationDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#FFFFFF",
+  },
+  nextStationWrap: {
+    alignItems: "center",
+  },
+  nextStationMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 3,
+    borderColor: CURRENT_LOCATION_BLUE,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000000",
+    shadowOpacity: 0.22,
+    shadowRadius: 4,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    elevation: 3,
+  },
+  nextStationDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: CURRENT_LOCATION_BLUE,
+  },
+  stationLabel: {
+    marginTop: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  stationLabelText: {
+    fontSize: 10,
+    fontWeight: "700",
   },
   attractionMarkerWrap: {
     alignItems: "center",

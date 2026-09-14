@@ -1,13 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -16,14 +15,12 @@ import PageHeader from "../../components/PageHeader";
 import FunFactCard from "../../components/trip/FunFactCard";
 import LiveUpdatesSection from "../../components/trip/LiveUpdatesSection";
 import MapSection from "../../components/trip/MapSection";
-import PlacesSection from "../../components/trip/PlacesSection";
 import SegmentTransportList, {
   buildSegmentTransports,
 } from "../../components/trip/SegmentTransportList";
 import StopsTimeline from "../../components/trip/StopsTimeline";
 import TodayInfoCard from "../../components/trip/TodayInfoCard";
 import TripOverviewCard from "../../components/trip/TripOverviewCard";
-import RouteAttractionsSection from "../../components/trip/RouteAttractionsSection";
 import WeatherCard from "../../components/trip/WeatherCard";
 import { BlockLoading } from "../../components/trip/primitives";
 import { useSupabase } from "../../hook/usesupabase";
@@ -38,20 +35,17 @@ import {
   type JourneySegment,
 } from "../../services/liveTripsApi";
 import { getLiveTripUpdates, type LiveUpdatesInfo } from "../../services/tripLiveApi";
-import type { RouteAttraction } from "../../services/placesApi";
+import { resolveCityCoordinates } from "../../services/routeApi";
 import type { TripStop, TripTransport } from "../../services/tripsApi";
-import {
-  CITY_EXPLORE_CATEGORIES,
-  categoryConfig,
-  CUSTOM_SEARCH_CATEGORY_ID,
-  CUSTOM_SEARCH_HINT,
-  CUSTOM_SEARCH_PLACEHOLDER,
-} from "../../services/cityDiscoveryApi";
+import { useAppTheme } from "../../src/theme/ThemeProvider";
+import type { ThemeTokens } from "../../src/theme/tokens";
 
 type LoadState = "loading" | "ready" | "error";
 
 export default function TripDetailsScreen() {
   const params = useLocalSearchParams<{ tripId?: string }>();
+  const { theme, dark } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme, dark), [theme, dark]);
   const tripId =
     typeof params.tripId === "string" && params.tripId
       ? params.tripId
@@ -62,16 +56,10 @@ export default function TripDetailsScreen() {
   const [trip, setTrip] = useState<TripSummaryCard | null>(null);
   const [stops, setStops] = useState<TripStop[]>([]);
   const [transports, setTransports] = useState<TripTransport[]>([]);
-  const [routeAttractions, setRouteAttractions] = useState<RouteAttraction[]>(
-    []
-  );
   const [attempt, setAttempt] = useState(0);
 
   const [infoVisible, setInfoVisible] = useState(false);
   const [selectedMapMode, setSelectedMapMode] = useState<"segment" | "full">("segment");
-  const [selectedExploreCity, setSelectedExploreCity] = useState<string | null>(null);
-  const [selectedExploreCategory, setSelectedExploreCategory] = useState<string>("tourist-attraction");
-  const [customCategory, setCustomCategory] = useState("");
   const [liveUpdates, setLiveUpdates] = useState<LiveUpdatesInfo | null>(null);
 
   const load = useCallback(async () => {
@@ -81,7 +69,6 @@ export default function TripDetailsScreen() {
     }
 
     setLoadState("loading");
-    setRouteAttractions([]);
 
     try {
       const bundle = await getTripDetails(supabase, tripId);
@@ -111,9 +98,33 @@ export default function TripDetailsScreen() {
     });
   }
 
-  function openAttractionCity(attraction: RouteAttraction) {
-    if (!attraction.nearestCity) return;
-    openCity(attraction.nearestCity);
+  /*
+   * City-card "Explore" button: resolves the city once (existing geocoder,
+   * cached in-session) and opens the City Details POI exploration flow.
+   */
+  async function openExploreCity(cityName: string) {
+    if (!tripId) return;
+
+    try {
+      const point = await resolveCityCoordinates(cityName);
+
+      router.push({
+        pathname: "/(root)/city-details",
+        params: {
+          city: cityName.trim(),
+          tripId,
+          lat: String(point.latitude),
+          lon: String(point.longitude),
+          state: point.state ?? "",
+          country: point.country ?? "",
+        },
+      });
+    } catch (error) {
+      console.warn(
+        `Could not resolve coordinates for "${cityName}":`,
+        error
+      );
+    }
   }
 
   function retry() {
@@ -135,8 +146,6 @@ export default function TripDetailsScreen() {
     : cities.length >= 2
       ? [cities[0], cities[cities.length - 1]]
       : [];
-
-  const exploreCity = selectedExploreCity ?? nextStop ?? trip?.destination ?? null;
 
   const segmentTransports =
     trip && cities.length >= 2
@@ -167,7 +176,7 @@ export default function TripDetailsScreen() {
 
         {loadState === "error" ? (
           <View style={styles.center}>
-            <Ionicons name="alert-circle-outline" size={40} color="#C4C8CF" />
+            <Ionicons name="alert-circle-outline" size={40} color={theme.textMuted} />
             <Text style={styles.centerTitle}>Trip could not be loaded</Text>
             <Text style={styles.centerText}>
               It may have been deleted or is outside your access.
@@ -186,6 +195,35 @@ export default function TripDetailsScreen() {
 
         {loadState === "ready" && trip ? (
           <>
+            {trip.lifecycle === "active" ? (
+              <View style={styles.block}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/(root)/live-journey",
+                      params: { tripId },
+                    })
+                  }
+                  style={({ pressed }) => [
+                    styles.liveBanner,
+                    pressed && styles.liveBannerPressed,
+                  ]}
+                >
+                  <View style={styles.liveIcon}>
+                    <Ionicons name="pulse" size={18} color={theme.onPrimary} />
+                  </View>
+                  <View style={styles.liveBody}>
+                    <Text style={styles.liveTitle}>Live Journey</Text>
+                    <Text style={styles.liveSubtitle}>
+                      Follow this trip in real time with live transport status.
+                    </Text>
+                  </View>
+                  <Ionicons name="arrow-forward" size={18} color={theme.onPrimary} />
+                </Pressable>
+              </View>
+            ) : null}
+
             {segmentCities.length >= 2 ? (
               <View style={styles.block}>
                 <MapSection
@@ -197,8 +235,6 @@ export default function TripDetailsScreen() {
                       ? () => setSelectedMapMode((m) => m === "segment" ? "full" : "segment")
                       : undefined
                   }
-                  attractions={routeAttractions}
-                  onAttractionPress={openAttractionCity}
                 />
               </View>
             ) : null}
@@ -245,6 +281,7 @@ export default function TripDetailsScreen() {
                 <Text style={styles.blockHeading}>Transport</Text>
                 <SegmentTransportList
                   segments={segmentTransports}
+                  journeyCities={cities}
                   onOpenCity={openCity}
                 />
               </View>
@@ -260,6 +297,7 @@ export default function TripDetailsScreen() {
                   activeStopCity={nextStop}
                   lifecycle={trip.lifecycle}
                   onOpenCity={openCity}
+                  onExploreCity={openExploreCity}
                 />
               </View>
             ) : null}
@@ -278,141 +316,10 @@ export default function TripDetailsScreen() {
                       city={city}
                       compact
                       onOpenCity={openCity}
+                      onExploreCity={openExploreCity}
                     />
                   ))}
                 </ScrollView>
-              </View>
-            ) : null}
-
-            {cities.length > 0 ? (
-              <View style={styles.block}>
-                <RouteAttractionsSection
-                  cities={cities}
-                  onSelectAttraction={openAttractionCity}
-                  onAttractionsLoaded={setRouteAttractions}
-                />
-              </View>
-            ) : null}
-
-            {exploreCity ? (
-              <View style={styles.block}>
-                <Text style={styles.blockHeading}>Explore {exploreCity}</Text>
-                {cities.length > 1 ? (
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.cityChips}
-                  >
-                    {cities.map((city) => (
-                      <Pressable
-                        key={city}
-                        onPress={() => setSelectedExploreCity(city)}
-                        style={({ pressed }) => [
-                          styles.chip,
-                          exploreCity === city && styles.chipActive,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <Text style={[
-                          styles.chipText,
-                          exploreCity === city && styles.chipTextActive,
-                        ]}>
-                          {city}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                ) : null}
-
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.categoryRow}
-                >
-                  {CITY_EXPLORE_CATEGORIES.map((cat) => (
-                    <Pressable
-                      key={cat.id}
-                      onPress={() => setSelectedExploreCategory(cat.id)}
-                      style={({ pressed }) => [
-                        styles.categoryChip,
-                        selectedExploreCategory === cat.id && styles.categoryChipActive,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Ionicons
-                        name={cat.icon}
-                        size={14}
-                        color={selectedExploreCategory === cat.id ? "#FFFFFF" : "#00BC26"}
-                      />
-                      <Text style={[
-                        styles.categoryChipText,
-                        selectedExploreCategory === cat.id && styles.categoryChipTextActive,
-                      ]}>
-                        {cat.label}
-                      </Text>
-                    </Pressable>
-                  ))}
-
-                  <Pressable
-                    onPress={() => setSelectedExploreCategory(CUSTOM_SEARCH_CATEGORY_ID)}
-                    style={({ pressed }) => [
-                      styles.categoryChip,
-                      selectedExploreCategory === CUSTOM_SEARCH_CATEGORY_ID && styles.categoryChipActive,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Ionicons
-                      name="search-outline"
-                      size={14}
-                      color={selectedExploreCategory === CUSTOM_SEARCH_CATEGORY_ID ? "#FFFFFF" : "#00BC26"}
-                    />
-                    <Text style={[
-                      styles.categoryChipText,
-                      selectedExploreCategory === CUSTOM_SEARCH_CATEGORY_ID && styles.categoryChipTextActive,
-                    ]}>
-                      Custom
-                    </Text>
-                  </Pressable>
-                </ScrollView>
-
-                {selectedExploreCategory === CUSTOM_SEARCH_CATEGORY_ID ? (
-                  <TextInput
-                    value={customCategory}
-                    onChangeText={setCustomCategory}
-                    placeholder={CUSTOM_SEARCH_PLACEHOLDER}
-                    placeholderTextColor="#9CA3AF"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="search"
-                    style={styles.customInput}
-                  />
-                ) : null}
-
-                <View style={styles.exploreResults}>
-                  {selectedExploreCategory === CUSTOM_SEARCH_CATEGORY_ID ? (
-                    customCategory.trim() ? (
-                      <PlacesSection
-                        title={customCategory.trim()}
-                        categories={[]}
-                        customCategory={customCategory.trim()}
-                        city={exploreCity}
-                        limit={6}
-                      />
-                    ) : (
-                      <View style={styles.customHint}>
-                        <Ionicons name="search-outline" size={18} color="#9CA3AF" />
-                        <Text style={styles.customHintText}>{CUSTOM_SEARCH_HINT}</Text>
-                      </View>
-                    )
-                  ) : (
-                    <PlacesSection
-                      title={categoryConfig(selectedExploreCategory)?.label ?? "Places"}
-                      categories={[selectedExploreCategory]}
-                      city={exploreCity}
-                      limit={6}
-                    />
-                  )}
-                </View>
               </View>
             ) : null}
 
@@ -435,7 +342,7 @@ export default function TripDetailsScreen() {
               ]}
             >
               <View style={styles.saathiIcon}>
-                <Ionicons name="chatbubbles-outline" size={20} color="#08751F" />
+                <Ionicons name="chatbubbles-outline" size={20} color={dark ? theme.primary : "#08751F"} />
               </View>
               <View style={styles.saathiBody}>
                 <Text style={styles.saathiTitle}>Need help on your journey?</Text>
@@ -462,7 +369,7 @@ export default function TripDetailsScreen() {
               onPress={() => setInfoVisible(false)}
               style={({ pressed }) => [styles.modalClose, pressed && styles.pressed]}
             >
-              <Ionicons name="close" size={24} color="#1C1C1E" />
+              <Ionicons name="close" size={24} color={theme.text} />
             </Pressable>
           </View>
           <ScrollView contentContainerStyle={styles.modalContent}>
@@ -484,266 +391,223 @@ export default function TripDetailsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: "#F7F8FA",
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 40,
-  },
-  fixedHeader: {
-    backgroundColor: "#F7F8FA",
-  },
-  block: {
-    marginTop: 18,
-  },
-  blockHeading: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#1C1C1E",
-    marginBottom: 10,
-  },
-  center: {
-    paddingHorizontal: 28,
-    paddingVertical: 40,
-    gap: 8,
-    alignItems: "center",
-  },
-  centerTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#1C1C1E",
-  },
-  centerText: {
-    fontSize: 13,
-    color: "#71717A",
-    textAlign: "center",
-  },
-  retryButton: {
-    marginTop: 14,
-    paddingHorizontal: 22,
-    paddingVertical: 11,
-    borderRadius: 999,
-    backgroundColor: "#00BC26",
-  },
-  retryButtonText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  pressed: {
-    opacity: 0.7,
-  },
+const createStyles = (theme: ThemeTokens, dark: boolean) =>
+  StyleSheet.create({
+    safe: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    scroll: {
+      flex: 1,
+    },
+    scrollContent: {
+      paddingHorizontal: 16,
+      paddingBottom: 40,
+    },
+    fixedHeader: {
+      backgroundColor: theme.background,
+    },
+    block: {
+      marginTop: 18,
+    },
+    blockHeading: {
+      fontSize: 16,
+      fontWeight: "800",
+      color: theme.text,
+      marginBottom: 10,
+    },
+    center: {
+      paddingHorizontal: 28,
+      paddingVertical: 40,
+      gap: 8,
+      alignItems: "center",
+    },
+    centerTitle: {
+      fontSize: 18,
+      fontWeight: "800",
+      color: theme.text,
+    },
+    centerText: {
+      fontSize: 13,
+      color: theme.textSecondary,
+      textAlign: "center",
+    },
+    retryButton: {
+      marginTop: 14,
+      paddingHorizontal: 22,
+      paddingVertical: 11,
+      borderRadius: 999,
+      backgroundColor: theme.primary,
+    },
+    retryButtonText: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: theme.onPrimary,
+    },
+    pressed: {
+      opacity: 0.7,
+    },
 
-  metricsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 12,
-  },
-  metricItem: {
-    flex: 1,
-    alignItems: "center",
-    gap: 2,
-  },
-  metricLabel: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: "#9CA3AF",
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  metricValue: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#1C1C1E",
-    textAlign: "center",
-  },
-  metricDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: "#F1F3F5",
-  },
-  infoButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#E7F9EB",
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 8,
-  },
+    metricsRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: theme.surface,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: theme.border,
+      padding: 12,
+    },
+    metricItem: {
+      flex: 1,
+      alignItems: "center",
+      gap: 2,
+    },
+    metricLabel: {
+      fontSize: 10,
+      fontWeight: "600",
+      color: theme.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.4,
+    },
+    metricValue: {
+      fontSize: 13,
+      fontWeight: "700",
+      color: theme.text,
+      textAlign: "center",
+    },
+    metricDivider: {
+      width: 1,
+      height: 28,
+      backgroundColor: theme.border,
+    },
+    infoButton: {
+      width: 34,
+      height: 34,
+      borderRadius: 17,
+      backgroundColor: theme.primaryLight,
+      alignItems: "center",
+      justifyContent: "center",
+      marginLeft: 8,
+    },
 
-  weatherScroll: {
-    gap: 10,
-    paddingVertical: 2,
-  },
+    liveBanner: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      borderRadius: 16,
+      backgroundColor: theme.primary,
+      padding: 16,
+      shadowColor: "#000000",
+      shadowOpacity: 0.12,
+      shadowRadius: 12,
+      shadowOffset: {
+        width: 0,
+        height: 4,
+      },
+      elevation: 4,
+    },
+    liveBannerPressed: {
+      opacity: 0.9,
+    },
+    liveIcon: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: "rgba(255,255,255,0.22)",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    liveBody: {
+      flex: 1,
+      gap: 2,
+    },
+    liveTitle: {
+      fontSize: 15,
+      fontWeight: "800",
+      color: theme.onPrimary,
+    },
+    liveSubtitle: {
+      fontSize: 12,
+      color: theme.onPrimary,
+      lineHeight: 16,
+      opacity: 0.85,
+    },
 
-  cityChips: {
-    gap: 8,
-    marginBottom: 10,
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  chipActive: {
-    backgroundColor: "#E7F9EB",
-    borderColor: "#00BC26",
-  },
-  chipText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#6B7280",
-  },
-  chipTextActive: {
-    color: "#007A1E",
-    fontWeight: "700",
-  },
+    weatherScroll: {
+      gap: 10,
+      paddingVertical: 2,
+    },
 
-  categoryRow: {
-    gap: 8,
-    marginBottom: 12,
-  },
-  categoryChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 999,
-    backgroundColor: "#E7F9EB",
-    borderWidth: 1,
-    borderColor: "#BEEBC5",
-  },
-  categoryChipActive: {
-    backgroundColor: "#00BC26",
-    borderColor: "#00BC26",
-  },
-  categoryChipText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#007A1E",
-  },
-  categoryChipTextActive: {
-    color: "#FFFFFF",
-  },
+    saathiBanner: {
+      marginTop: 18,
+      borderRadius: 16,
+      backgroundColor: theme.primaryLight,
+      borderWidth: 1,
+      borderColor: dark ? "rgba(0,188,38,0.35)" : "#BEEBC5",
+      padding: 16,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+    saathiBannerPressed: {
+      opacity: 0.8,
+    },
+    saathiIcon: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: theme.surface,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    saathiBody: {
+      flex: 1,
+      gap: 2,
+    },
+    saathiTitle: {
+      fontSize: 14,
+      fontWeight: "800",
+      color: dark ? theme.primary : "#08751F",
+    },
+    saathiSubtitle: {
+      fontSize: 12,
+      color: dark ? theme.primary : "#08751F",
+      lineHeight: 16,
+    },
+    saathiCTA: {
+      fontSize: 13,
+      fontWeight: "700",
+      color: dark ? theme.primary : "#08751F",
+    },
 
-  exploreResults: {
-    marginTop: 2,
-  },
-
-  customInput: {
-    marginBottom: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: "#1C1C1E",
-  },
-
-  customHint: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#F9FAFB",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  customHintText: {
-    flex: 1,
-    fontSize: 13,
-    color: "#71717A",
-  },
-
-  saathiBanner: {
-    marginTop: 18,
-    borderRadius: 16,
-    backgroundColor: "#E7F9EB",
-    borderWidth: 1,
-    borderColor: "#BEEBC5",
-    padding: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  saathiBannerPressed: {
-    opacity: 0.8,
-  },
-  saathiIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#FFFFFF",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  saathiBody: {
-    flex: 1,
-    gap: 2,
-  },
-  saathiTitle: {
-    fontSize: 14,
-    fontWeight: "800",
-    color: "#08751F",
-  },
-  saathiSubtitle: {
-    fontSize: 12,
-    color: "#08751F",
-    lineHeight: 16,
-  },
-  saathiCTA: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#08751F",
-  },
-
-  modalSafe: {
-    flex: 1,
-    backgroundColor: "#F7F8FA",
-  },
-  modalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F1F3F5",
-    backgroundColor: "#FFFFFF",
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#1C1C1E",
-  },
-  modalClose: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#F3F4F6",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  modalContent: {
-    padding: 16,
-  },
-});
+    modalSafe: {
+      flex: 1,
+      backgroundColor: theme.background,
+    },
+    modalHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 20,
+      paddingVertical: 14,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+      backgroundColor: theme.surface,
+    },
+    modalTitle: {
+      fontSize: 18,
+      fontWeight: "800",
+      color: theme.text,
+    },
+    modalClose: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: theme.surfaceSecondary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    modalContent: {
+      padding: 16,
+    },
+  });

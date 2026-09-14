@@ -976,6 +976,28 @@ const handleSignOut = async () => {
                       Dark
                     </Text>
                   </TouchableOpacity>
+
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    style={[
+                      styles.appearanceOption,
+                      mode === "system" &&
+                        styles.appearanceOptionSelected,
+                    ]}
+                    onPress={() => setMode("system")}
+                  >
+                    <Text style={styles.appearanceEmoji}>🖥️</Text>
+                    <Text
+                      style={[
+                        styles.appearanceLabel,
+                        dark && styles.textDark,
+                        mode === "system" &&
+                          styles.appearanceLabelSelected,
+                      ]}
+                    >
+                      System
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             </>

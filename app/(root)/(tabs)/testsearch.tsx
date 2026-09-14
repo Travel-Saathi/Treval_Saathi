@@ -1,4 +1,3 @@
-
 import React, {
   useEffect,
   useRef,
@@ -98,8 +97,6 @@ const PLACE_TYPES: PlaceType[] = [
 ];
 
 export default function LocationSearchScreen() {
-  // Keep the selected destination local to this screen.
-  // This avoids depending on a store module that is not present in the project.
   const [selectedLocation, setSelectedLocation] =
     useState<LocationResult | null>(null);
 
@@ -247,7 +244,8 @@ export default function LocationSearchScreen() {
     );
 
     /*
-     * Save destination in Zustand.
+     * Save destination in Zustand (the single authoritative source shared
+     * by the category screen, Explore and both providers).
      */
     setSelectedLocation(location);
 
@@ -277,13 +275,15 @@ export default function LocationSearchScreen() {
    * Toggle a category.
    */
   function togglePlaceType(id: string) {
-    setSelectedPlaceTypes((current) =>
-      current.includes(id)
+    setSelectedPlaceTypes((current) => {
+      const next = current.includes(id)
         ? current.filter(
             (item) => item !== id
           )
-        : [...current, id]
-    );
+        : [...current, id];
+
+      return next;
+    });
   }
 
   /*
@@ -344,31 +344,18 @@ export default function LocationSearchScreen() {
       selectedPlaceTypes
     );
 
-    const destinationRequest = {
-      destination: {
-        id: selectedLocation.id,
-        name: selectedLocation.name,
-        formatted: selectedLocation.formatted,
-        latitude: selectedLocation.latitude,
-        longitude: selectedLocation.longitude,
-      },
-      placeTypes: selectedPlaceTypes,
-    };
-
-    console.log(
-      "DESTINATION REQUEST:",
-      destinationRequest
-    );
-
+    /*
+     * Carry the selection over to the City Details POI exploration screen,
+     * which fetches and shows the nearby places (Popular = database,
+     * Nearby = OSM) for this destination.
+     */
     router.push({
-      pathname: "../explore",
+      pathname: "/(root)/city-details",
       params: {
-        destination: JSON.stringify(
-          destinationRequest.destination
-        ),
-        placeTypes: JSON.stringify(
-          destinationRequest.placeTypes
-        ),
+        city: selectedLocation.name,
+        lat: String(selectedLocation.latitude),
+        lon: String(selectedLocation.longitude),
+        placeTypes: JSON.stringify(selectedPlaceTypes),
       },
     });
   }
