@@ -1,5 +1,7 @@
+import { useUser } from "@clerk/expo";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,10 +18,31 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useSupabase } from "../../hook/usesupabase";
+import {
+  listUserTrips,
+  toTripSummary,
+  getTripDetails,
+  type TripSummaryCard,
+} from "../../services/liveTripsApi";
 import {
   SaathiChatMessage,
+  SaathiContext,
+  SaathiContextLiveTrain,
+  SaathiContextTrip,
+  SaathiContextUser,
   sendSaathiMessage,
 } from "../../services/saathiApi";
+import {
+  fetchLiveTrainStatus,
+} from "../../services/liveTrainStatusApi";
+import {
+  listStops,
+  listTransport,
+  type TripRow,
+  type TripStop,
+  type TripTransport,
+} from "../../services/tripsApi";
 import { useAppTheme } from "../../src/theme/ThemeProvider";
 
 const SAATHI_LOGO = require("../../assets/images/saathilogo.png");
@@ -58,6 +81,286 @@ function formatTime(date: Date) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+const TRIP_QUESTION_PATTERN = new RegExp(
+  [
+    "train",
+    "railway",
+    "rail",
+    "station",
+    "journey",
+    "next stop",
+    "agli",
+    "agla station",
+    "next station",
+    "platform",
+    "delay",
+    "late",
+    "depart",
+    "arriv",
+    "pahunch",
+    "pahuche",
+    "pahuchegi",
+    "pahuchega",
+    "kab pahunch",
+    "reach",
+    "timing",
+    "schedule",
+    "status",
+    "current location",
+  ].join("|"),
+  "i"
+);
+
+function isTripSpecificQuestion(text: string): boolean {
+  return TRIP_QUESTION_PATTERN.test(text);
+}
+
+const MONTH_SHORT_LABELS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+function formatTripDate(iso: string | null): string {
+  if (!iso) {
+    return "";
+  }
+
+  const parts = iso.split("-").map(Number);
+
+  if (parts.length !== 3) {
+    return iso;
+  }
+
+  const [year, month, day] = parts;
+
+  if (!year || !month || !day) {
+    return iso;
+  }
+
+  return `${day} ${MONTH_SHORT_LABELS[(month - 1) % 12]}`;
+}
+
+function cleanContextString(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function buildUserContext(
+  user: { fullName?: string | null; firstName?: string | null } | null,
+  profile: { full_name?: string | null; home_city?: string | null; bio?: string | null } | null
+): SaathiContextUser | null {
+  const name =
+    user?.fullName ||
+    user?.firstName ||
+    profile?.full_name ||
+    null;
+  const homeCity = cleanContextString(profile?.home_city);
+  const bio = cleanContextString(profile?.bio);
+
+  if (!name && !homeCity && !bio) {
+    return null;
+  }
+
+  return { name, homeCity, bio };
+}
+
+function buildTripContext(
+  trip: TripRow | TripSummaryCard,
+  stops: TripStop[],
+  transports: TripTransport[]
+): SaathiContextTrip | null {
+  const stopCities = (stops ?? [])
+    .map((stop) => stop.city.trim())
+    .filter(Boolean);
+
+  const transportRows = (transports ?? [])
+    .map((transport) => ({
+      mode: cleanContextString(transport.mode),
+      name: cleanContextString(transport.transport_name),
+      number: cleanContextString(transport.transport_number),
+      from: cleanContextString(transport.departure_city),
+      to: cleanContextString(transport.arrival_city),
+      departureTime: cleanContextString(transport.departure_time),
+      arrivalTime: cleanContextString(transport.arrival_time),
+      status: cleanContextString(transport.status),
+    }))
+    .filter((row) =>
+      row.name ||
+      row.number ||
+      row.from ||
+      row.to ||
+      row.status
+    );
+
+  return {
+    sourceCity: cleanContextString(trip.source_city),
+    destination: cleanContextString(trip.destination),
+    description: cleanContextString(trip.description),
+    startDate: cleanContextString(trip.start_date),
+    endDate: cleanContextString(trip.end_date),
+    budget:
+      typeof trip.budget === "number" && Number.isFinite(trip.budget)
+        ? trip.budget
+        : null,
+    members:
+      typeof trip.members === "number" && Number.isInteger(trip.members)
+        ? trip.members
+        : null,
+    stops: stopCities.length > 0 ? stopCities : null,
+    transports: transportRows.length > 0 ? transportRows : null,
+  };
+}
+
+interface LoadedTripContext {
+  trip: TripRow | TripSummaryCard;
+  stops: TripStop[];
+  transports: TripTransport[];
+}
+
+async function loadBundleForTrip(
+  supabase: SupabaseClient,
+  trip: TripRow | TripSummaryCard
+): Promise<LoadedTripContext | null> {
+  try {
+    const [stopsResult, transportsResult] = await Promise.allSettled([
+      listStops(supabase, trip.id),
+      listTransport(supabase, trip.id),
+    ]);
+
+    const stops =
+      stopsResult.status === "fulfilled" ? stopsResult.value : [];
+
+    if (stopsResult.status === "rejected") {
+      console.error("[SAATHI] listStops failed:", stopsResult.reason);
+    }
+
+    const transports =
+      transportsResult.status === "fulfilled"
+        ? transportsResult.value
+        : [];
+
+    if (transportsResult.status === "rejected") {
+      console.error(
+        "[SAATHI] listTransport failed:",
+        transportsResult.reason
+      );
+    }
+
+    return { trip, stops, transports };
+  } catch (err) {
+    console.error("[SAATHI] loadBundleForTrip failed:", err);
+    return null;
+  }
+}
+
+/**
+ * Home entry: only auto-pick a trip when exactly one relevant trip exists
+ * (active/upcoming). With zero or multiple trips we never guess — Saathi
+ * shows the trip picker instead when a trip is actually needed.
+ */
+async function resolveHomeCurrentTrip(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<LoadedTripContext | null> {
+  const rows = await listUserTrips(supabase, userId);
+  const summaries = rows.map(toTripSummary);
+
+  const relevant = summaries.filter(
+    (summary) =>
+      summary.lifecycle === "active" ||
+      summary.lifecycle === "upcoming"
+  );
+
+  if (relevant.length !== 1) {
+    return null;
+  }
+
+  return loadBundleForTrip(supabase, relevant[0]);
+}
+
+/**
+ * Candidate trips offered in the trip-selection UI (Home entry).
+ * Active + upcoming trips first (soonest start first); if there are none,
+ * fall back to the most recently created trips for continuity.
+ */
+async function loadTripCandidates(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<TripSummaryCard[]> {
+  const rows = await listUserTrips(supabase, userId);
+  const summaries = rows.map(toTripSummary);
+
+  const active = summaries.filter(
+    (summary) => summary.lifecycle === "active"
+  );
+
+  const upcoming = summaries
+    .filter((summary) => summary.lifecycle === "upcoming")
+    .sort((a, b) =>
+      (a.start_date ?? "9999").localeCompare(b.start_date ?? "9999")
+    );
+
+  const relevant = [...active, ...upcoming];
+
+  if (relevant.length > 0) {
+    return relevant.slice(0, 5);
+  }
+
+  return summaries.slice(0, 3);
+}
+
+/**
+ * Fetch live status (existing Railway service) for a trip's train. On any
+ * failure returns an `liveUnavailable` envelope so Saathi says it clearly
+ * instead of guessing.
+ */
+async function fetchLiveForTransport(
+  transport: TripTransport
+): Promise<SaathiContextLiveTrain> {
+  const base: SaathiContextLiveTrain = {
+    trainNumber: transport.transport_number ?? null,
+    trainName: transport.transport_name ?? null,
+    liveUnavailable: false,
+  };
+
+  try {
+    const info = await fetchLiveTrainStatus(transport);
+
+    if (info.liveUnavailable) {
+      return { ...base, liveUnavailable: true };
+    }
+
+    return {
+      trainNumber: info.trainNumber ?? base.trainNumber,
+      trainName: info.trainName ?? base.trainName,
+      liveUnavailable: false,
+      statusLabel: info.statusLabel,
+      currentStation: info.currentStation,
+      nextStation: info.nextStation,
+      nextStationExpectedTime: info.nextStationExpectedTime,
+      expectedArrivalTime: info.expectedArrivalTime,
+      expectedDepartureTime: info.expectedDepartureTime,
+      delay: info.delay,
+      onTime: info.onTime,
+      arrived: info.arrived,
+      lastUpdatedAt: info.lastUpdatedAt,
+    };
+  } catch (err) {
+    console.error("[SAATHI] fetchLiveTrainStatus failed:", err);
+    return { ...base, liveUnavailable: true };
+  }
 }
 
 function TypingIndicator({ color }: { color: string }) {
@@ -125,12 +428,35 @@ function TypingIndicator({ color }: { color: string }) {
 }
 
 export default function SaathiScreen() {
+  const params = useLocalSearchParams<{
+    tripId?: string;
+    entryContext?: string;
+  }>();
+  const entryContext: "home" | "trip" =
+    params.entryContext === "trip" ? "trip" : "home";
+  const tripId =
+    typeof params.tripId === "string" && params.tripId
+      ? params.tripId
+      : null;
+
+  const { user } = useUser();
+  const supabase = useSupabase();
   const { theme, dark } = useAppTheme();
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [context, setContext] = useState<SaathiContext | null>(null);
+  const [activeTrip, setActiveTrip] = useState<LoadedTripContext | null>(
+    null
+  );
+  const [tripOptions, setTripOptions] = useState<TripSummaryCard[]>([]);
+  const [tripPickerVisible, setTripPickerVisible] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(
+    null
+  );
+  const [tripLoading, setTripLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
   const chatBackground = dark ? SAATHI_BG_DARK : SAATHI_BG_LIGHT;
@@ -145,6 +471,196 @@ export default function SaathiScreen() {
     ? "rgba(16, 20, 18, 0.9)"
     : "rgba(255, 255, 255, 0.92)";
 
+  const loadContext = useCallback(async () => {
+    if (!user?.id) {
+      setContext(null);
+      return;
+    }
+
+    try {
+      const profilePromise = supabase
+        .from("profiles")
+        .select("full_name, home_city, bio")
+        .eq("clerk_id", user.id)
+        .maybeSingle();
+
+      let tripPromise: Promise<LoadedTripContext | null>;
+
+      if (entryContext === "trip" && tripId) {
+        tripPromise = getTripDetails(supabase, tripId)
+          .then((bundle) => ({
+            trip: bundle.trip,
+            stops: bundle.stops,
+            transports: bundle.transports,
+          }))
+          .catch((tripErr) => {
+            console.error("[SAATHI] getTripDetails failed:", tripErr);
+            return null;
+          });
+      } else if (entryContext === "home") {
+        tripPromise = resolveHomeCurrentTrip(supabase, user.id).catch(
+          (tripErr) => {
+            console.error(
+              "[SAATHI] resolveHomeCurrentTrip failed:",
+              tripErr
+            );
+            return null;
+          }
+        );
+      } else {
+        tripPromise = Promise.resolve(null);
+      }
+
+      const [profileSettled, tripSettled] = await Promise.allSettled([
+        profilePromise,
+        tripPromise,
+      ]);
+
+      const profileResult =
+        profileSettled.status === "fulfilled" ? profileSettled.value : null;
+
+      if (profileSettled.status === "rejected") {
+        console.error("[SAATHI] profile query failed:", profileSettled.reason);
+      }
+
+      const profile =
+        !profileResult || profileResult.error || !profileResult.data
+          ? null
+          : profileResult.data;
+
+      const tripBundle =
+        tripSettled.status === "fulfilled" ? tripSettled.value : null;
+
+      if (tripSettled.status === "rejected") {
+        console.error("[SAATHI] trip query failed:", tripSettled.reason);
+      }
+
+      const nextContext: SaathiContext = {};
+      const userContext = buildUserContext(user, profile);
+      if (userContext) {
+        nextContext.user = userContext;
+      }
+
+      if (tripBundle?.trip) {
+        setActiveTrip(tripBundle);
+
+        const tripContext = buildTripContext(
+          tripBundle.trip,
+          tripBundle.stops,
+          tripBundle.transports
+        );
+
+        if (
+          tripContext &&
+          (tripContext.destination ||
+            tripContext.sourceCity ||
+            (tripContext.transports &&
+              tripContext.transports.length > 0) ||
+            (tripContext.stops && tripContext.stops.length > 0))
+        ) {
+          nextContext.trip = tripContext;
+        }
+      }
+
+      console.log(
+        "[SAATHI] context loaded:",
+        JSON.stringify({
+          hasUser: !!nextContext.user,
+          hasTrip: !!nextContext.trip,
+          entryContext,
+        })
+      );
+
+      setContext(nextContext);
+    } catch (err) {
+      console.error("[SAATHI] loadContext unexpected error:", err);
+      setContext(null);
+    }
+  }, [user, supabase, tripId, entryContext]);
+
+  useEffect(() => {
+    loadContext();
+  }, [loadContext]);
+
+  function appendUserMessage(content: string) {
+    setMessages((current) => [
+      ...current,
+      {
+        id: makeMessageId(),
+        role: "user",
+        content,
+        time: formatTime(new Date()),
+      },
+    ]);
+  }
+
+  function appendAssistantMessage(content: string) {
+    setMessages((current) => [
+      ...current,
+      {
+        id: makeMessageId(),
+        role: "assistant",
+        content,
+        time: formatTime(new Date()),
+      },
+    ]);
+  }
+
+  async function sendHistory(
+    history: SaathiChatMessage[],
+    sendContext: SaathiContext | null
+  ) {
+    setSending(true);
+
+    try {
+      const reply = await sendSaathiMessage(history, sendContext);
+      appendAssistantMessage(reply.content);
+    } catch {
+      setError(ERROR_MESSAGE);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function buildContextForTrip(
+    question: string,
+    bundle: LoadedTripContext
+  ): Promise<SaathiContext> {
+    const nextContext: SaathiContext = {
+      ...(context ?? {}),
+      user: context?.user ?? null,
+    };
+
+    const tripContext = buildTripContext(
+      bundle.trip,
+      bundle.stops,
+      bundle.transports
+    );
+
+    if (
+      tripContext &&
+      (tripContext.destination ||
+        tripContext.sourceCity ||
+        (tripContext.transports &&
+          tripContext.transports.length > 0) ||
+        (tripContext.stops && tripContext.stops.length > 0))
+    ) {
+      nextContext.trip = tripContext;
+    }
+
+    const train = (bundle.transports ?? []).find(
+      (transport) =>
+        transport.mode === "train" &&
+        Boolean(transport.transport_number)
+    );
+
+    if (train && isTripSpecificQuestion(question)) {
+      nextContext.liveTrain = await fetchLiveForTransport(train);
+    }
+
+    return nextContext;
+  }
+
   async function handleSend(rawText: string) {
     const text = rawText.trim();
 
@@ -152,42 +668,90 @@ export default function SaathiScreen() {
       return;
     }
 
+    setError(null);
+    setInputText("");
+
     const history: SaathiChatMessage[] = [
       ...messages.map(({ role, content }) => ({ role, content })),
       { role: "user", content: text },
     ];
 
-    setError(null);
-    setSending(true);
-    setInputText("");
+    appendUserMessage(text);
 
-    setMessages((current) => [
-      ...current,
-      {
-        id: makeMessageId(),
-        role: "user",
-        content: text,
-        time: formatTime(new Date()),
-      },
-    ]);
+    const tripQuestion = isTripSpecificQuestion(text);
 
-    try {
-      const reply = await sendSaathiMessage(history);
+    if (entryContext === "home" && tripQuestion && !activeTrip) {
+      const candidates = user?.id
+        ? await loadTripCandidates(supabase, user.id)
+        : [];
 
-      setMessages((current) => [
-        ...current,
-        {
-          id: makeMessageId(),
-          role: "assistant",
-          content: reply.content,
-          time: formatTime(new Date()),
-        },
-      ]);
-    } catch {
-      setError(ERROR_MESSAGE);
-    } finally {
-      setSending(false);
+      if (candidates.length > 1) {
+        appendAssistantMessage(
+          "Sure 🚆 Kis trip ki train check karni hai?"
+        );
+        setPendingQuestion(text);
+        setTripOptions(candidates);
+        setTripPickerVisible(true);
+        return;
+      }
+
+      if (candidates.length === 1) {
+        const bundle = await loadBundleForTrip(supabase, candidates[0]);
+
+        if (bundle) {
+          setActiveTrip(bundle);
+          const tripContextNow = await buildContextForTrip(text, bundle);
+          setContext(tripContextNow);
+          await sendHistory(history, tripContextNow);
+          return;
+        }
+      }
     }
+
+    if (tripQuestion && activeTrip) {
+      const tripContextNow = await buildContextForTrip(text, activeTrip);
+      setContext(tripContextNow);
+      await sendHistory(history, tripContextNow);
+      return;
+    }
+
+    await sendHistory(history, context);
+  }
+
+  async function selectTrip(trip: TripSummaryCard) {
+    if (!user?.id || !pendingQuestion) {
+      setTripPickerVisible(false);
+      return;
+    }
+
+    const question = pendingQuestion;
+
+    setTripPickerVisible(false);
+    setTripOptions([]);
+    setPendingQuestion(null);
+    setTripLoading(true);
+    setSending(true);
+
+    const bundle = await loadBundleForTrip(supabase, trip);
+
+    setTripLoading(false);
+
+    if (!bundle) {
+      setError(ERROR_MESSAGE);
+      setSending(false);
+      return;
+    }
+
+    setActiveTrip(bundle);
+
+    const tripContextNow = await buildContextForTrip(question, bundle);
+    setContext(tripContextNow);
+
+    const history: SaathiChatMessage[] = messages.map(
+      ({ role, content }) => ({ role, content })
+    );
+
+    await sendHistory(history, tripContextNow);
   }
 
   const scrollToEnd = useCallback(() => {
@@ -196,7 +760,11 @@ export default function SaathiScreen() {
 
   const canSend = Boolean(inputText.trim()) && !sending;
   const lastIsAssistant = messages[messages.length - 1]?.role === "assistant";
-  const showQuickReplies = messages.length > 0 && lastIsAssistant && !sending;
+  const showQuickReplies =
+    messages.length > 0 &&
+    lastIsAssistant &&
+    !sending &&
+    !tripPickerVisible;
 
   const userBubbleColor = dark ? theme.primaryDark : theme.primary;
   const sendReadyColor = theme.primary;

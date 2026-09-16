@@ -4,6 +4,7 @@ import { Image, StyleSheet, useWindowDimensions, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import NotificationBell from "../../../components/NotificationBell";
+import SaathiHeaderButton from "../../../components/SaathiHeaderButton";
 import { useAppTheme } from "../../../src/theme/ThemeProvider";
 import { useNotificationsStore } from "../../../store/notificationsStore";
 
@@ -37,6 +38,7 @@ function NavigationHeader() {
       </View>
 
       <View style={styles.actions}>
+        <SaathiHeaderButton />
         <NotificationBell unreadCount={unreadCount} color={theme.headerText} />
       </View>
     </View>

@@ -5,7 +5,11 @@
  *       {
  *         "messages": [
  *           { "role": "user", "content": "..." }
- *         ]
+ *         ],
+ *         "context": {           // optional
+ *           "user": { ... },
+ *           "trip": { ... }
+ *         }
  *       }
  *
  * Returns:
@@ -18,7 +22,10 @@
  *
  * The frontend never learns anything about the model/provider: it only
  * receives the assistant reply. No tool/function calling is wired in this
- * step — Gemma answers from the Saathi system prompt alone.
+ * step — the LLM answers from the Saathi system prompt alone. The optional
+ * `context` object may carry minimal authenticated-user/trip context, which
+ * is whitelisted and folded into the system prompt so replies stay
+ * personalized without exposing database details back to the client.
  */
 
 const express = require("express");
@@ -28,14 +35,14 @@ const {
 } = require("../services/openRouterService");
 
 const {
-  SAATHI_SYSTEM_PROMPT,
+  buildSaathiSystemPrompt,
 } = require("../utils/saathiPrompt");
 
 const router = express.Router();
 
 router.post("/", async (req, res) => {
   try {
-    const { messages } = req.body ?? {};
+    const { messages, context } = req.body ?? {};
 
     if (!Array.isArray(messages)) {
       return res.status(400).json({
@@ -70,8 +77,10 @@ router.post("/", async (req, res) => {
       }
     }
 
+    const systemPrompt = buildSaathiSystemPrompt(context);
+
     const content = await sendChatMessages(messages, {
-      systemPrompt: SAATHI_SYSTEM_PROMPT,
+      systemPrompt,
     });
 
     return res.json({

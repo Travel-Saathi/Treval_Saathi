@@ -335,7 +335,12 @@ export default function TripDetailsScreen() {
 
             <Pressable
               accessibilityRole="button"
-              onPress={() => router.push("/(root)/saathi")}
+              onPress={() =>
+                router.push({
+                  pathname: "/(root)/saathi",
+                  params: { tripId, entryContext: "trip" },
+                })
+              }
               style={({ pressed }) => [
                 styles.saathiBanner,
                 pressed && styles.saathiBannerPressed,

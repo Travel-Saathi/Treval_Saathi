@@ -19,6 +19,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import NotificationBell from "../../../components/NotificationBell";
+import SaathiHeaderButton from "../../../components/SaathiHeaderButton";
 import { useSupabase } from "../../../hook/usesupabase";
 import { searchLocation } from "../../../services/locationApi";
 import { createTrip } from "../../../services/tripsApi";
@@ -547,6 +548,7 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.actions}>
+          <SaathiHeaderButton />
           <NotificationBell
             unreadCount={unreadCount}
             color={theme.headerText}
