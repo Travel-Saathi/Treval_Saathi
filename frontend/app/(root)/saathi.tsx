@@ -983,6 +983,86 @@ export default function SaathiScreen() {
                   );
                 })}
 
+                {tripPickerVisible && tripOptions.length > 0 ? (
+                  <View style={styles.tripPickerWrap}>
+                    {tripOptions.map((trip) => {
+                      const displayTitle =
+                        trip.title ||
+                        [trip.source_city, trip.destination]
+                          .filter(Boolean)
+                          .join(" → ") ||
+                        "Trip";
+                      const routeLine = [
+                        trip.source_city,
+                        trip.destination,
+                      ]
+                        .filter(Boolean)
+                        .join(" → ");
+                      const startLabel = formatTripDate(
+                        trip.start_date
+                      );
+
+                      return (
+                        <Pressable
+                          key={trip.id}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Select ${displayTitle}`}
+                          disabled={tripLoading || sending}
+                          onPress={() => selectTrip(trip)}
+                          style={({ pressed }) => [
+                            styles.tripOptionCard,
+                            {
+                              backgroundColor: chipSurface,
+                              borderColor: theme.border,
+                            },
+                            pressed && styles.tripOptionPressed,
+                          ]}
+                        >
+                          <View style={styles.tripOptionHeader}>
+                            <Ionicons
+                              name="location"
+                              size={16}
+                              color={theme.primary}
+                            />
+                            <Text
+                              style={[
+                                styles.tripOptionTitle,
+                                { color: theme.text },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {displayTitle}
+                            </Text>
+                          </View>
+
+                          {routeLine ? (
+                            <Text
+                              style={[
+                                styles.tripOptionRoute,
+                                { color: theme.textSecondary },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {routeLine}
+                            </Text>
+                          ) : null}
+
+                          {startLabel ? (
+                            <Text
+                              style={[
+                                styles.tripOptionDate,
+                                { color: theme.textMuted },
+                              ]}
+                            >
+                              {startLabel}
+                            </Text>
+                          ) : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+
                 {sending ? (
                   <View style={[styles.msgRow, styles.msgRowAssistant]}>
                     <View
@@ -1377,6 +1457,52 @@ const styles = StyleSheet.create({
   replyChipText: {
     fontSize: 13,
     fontWeight: "600",
+  },
+
+  tripPickerWrap: {
+    gap: 10,
+    paddingVertical: 2,
+  },
+
+  tripOptionCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    shadowColor: "#000000",
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
+  },
+
+  tripOptionPressed: {
+    transform: [{ scale: 0.97 }],
+    opacity: 0.85,
+  },
+
+  tripOptionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  tripOptionTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "700",
+  },
+
+  tripOptionRoute: {
+    marginTop: 3,
+    marginLeft: 22,
+    fontSize: 13,
+  },
+
+  tripOptionDate: {
+    marginTop: 2,
+    marginLeft: 22,
+    fontSize: 12,
   },
 
   errorCard: {

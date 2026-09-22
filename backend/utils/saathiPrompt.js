@@ -151,11 +151,12 @@ function buildUserContextBlock(context) {
   }
 
   const lines = [];
+  let homeCity = "";
 
   const user = context.user;
   if (user && typeof user === "object") {
     const userName = cleanString(user.name);
-    const homeCity = cleanString(user.homeCity);
+    homeCity = cleanString(user.homeCity);
     const bio = cleanString(user.bio);
 
     const userBits = [];
@@ -228,12 +229,29 @@ function buildUserContextBlock(context) {
     return null;
   }
 
+  const notes = [];
+  notes.push(
+    "Never repeat this whole block back to the user, and never reveal stored profile/trip values unless they are relevant to the current question."
+  );
+  notes.push(
+    "Treat stored trip/profile information as background context — not live status. Do not invent current transport position, weather, or delays beyond what is explicitly listed here."
+  );
+
+  if (homeCity) {
+    notes.push(
+      'When the traveler says "my city", "meri city", "mere city", "my hometown", "mere hometown", or similar, they mean the Home city listed above — use it directly and do not ask "which city?". If the traveler explicitly names a different city, prefer that explicit city.'
+    );
+  } else {
+    notes.push(
+      'If the traveler says "my city", "meri city", "mere city", "my hometown", or "mere hometown", ask which city they mean — no home city is stored in their profile.'
+    );
+  }
+
   return `USER CONTEXT (trusted information about the person you're helping; use it only when relevant):
 ${lines.join("\n")}
 
 Notes:
-- Never repeat this whole block back to the user, and never reveal stored profile/trip values unless they are relevant to the current question.
-- Treat stored trip/profile information as background context — not live status. Do not invent current transport position, weather, or delays beyond what is explicitly listed here.`;
+${notes.map((note) => `- ${note}`).join("\n")}`;
 }
 
 function cleanString(value) {

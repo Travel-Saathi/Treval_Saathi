@@ -8,7 +8,11 @@
     "scheme": "clerkexpo",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.travelsaathi.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.travelsaathi.app",
@@ -40,6 +44,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "e59fbf1d-29b1-4a6f-95aa-699a786ae7e5"
+      }
     }
   }
 }

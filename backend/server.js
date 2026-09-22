@@ -555,7 +555,10 @@ app.get("/api/weather", async (req, res) => {
 /* --------------------------------------------------
    Start Server
 -------------------------------------------------- */
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Travel Saathi backend running on port ${PORT}`);
+  });
+}
 
-app.listen(PORT, () => {
-  console.log(`Travel Saathi backend running on port ${PORT}`);
-});
+module.exports = app;
