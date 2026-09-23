@@ -15,6 +15,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import NotificationBell from "../../../../components/NotificationBell";
+import DesktopProfile from "../../../../components/desktop/DesktopProfile";
+import { useIsDesktop } from "../../../../hook/useDesktop";
 import { useSupabase } from "../../../../hook/usesupabase";
 import {
   listUserTrips,
@@ -98,6 +100,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
   const unreadCount = useNotificationsStore((state) => state.unreadCount);
+  const isDesktop = useIsDesktop();
 
   const clerkId = user?.id ?? null;
 
@@ -184,6 +187,10 @@ export default function ProfileScreen() {
   const openPage = (route: string) => {
     router.push(route as Href);
   };
+
+  if (isDesktop) {
+    return <DesktopProfile />;
+  }
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>

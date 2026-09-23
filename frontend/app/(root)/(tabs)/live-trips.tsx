@@ -13,6 +13,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import TripCard from "../../../components/trip/TripCard";
+import DesktopMyPlans from "../../../components/desktop/DesktopMyPlans";
+import { useIsDesktop } from "../../../hook/useDesktop";
 import { useSupabase } from "../../../hook/usesupabase";
 import { useAppTheme } from "../../../src/theme/ThemeProvider";
 import {
@@ -91,6 +93,7 @@ export default function LiveTripsScreen() {
   const supabase = useSupabase();
   const { theme } = useAppTheme();
   const mounted = useRef(true);
+  const isDesktop = useIsDesktop();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -183,6 +186,10 @@ export default function LiveTripsScreen() {
   }
 
   const isEmpty = !loading && !failed && trips.length === 0;
+
+  if (isDesktop) {
+    return <DesktopMyPlans />;
+  }
 
   return (
     <SafeAreaView

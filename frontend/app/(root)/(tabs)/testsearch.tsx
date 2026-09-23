@@ -17,6 +17,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 
+import DesktopExplore from "../../../components/desktop/DesktopExplore";
+import { useIsDesktop } from "../../../hook/useDesktop";
 import { searchLocation } from "../../../services/locationApi";
 
 interface LocationResult {
@@ -122,6 +124,8 @@ export default function LocationSearchScreen() {
     useRef<AbortController | null>(null);
 
   const inputRef = useRef<TextInput>(null);
+
+  const isDesktop = useIsDesktop();
 
   /*
    * Debounced location search.
@@ -363,6 +367,10 @@ export default function LocationSearchScreen() {
   const canContinue =
     Boolean(selectedLocation) &&
     selectedPlaceTypes.length > 0;
+
+  if (isDesktop) {
+    return <DesktopExplore />;
+  }
 
   /*
    * Destination-selected UI

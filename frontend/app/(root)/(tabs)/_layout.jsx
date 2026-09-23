@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import NotificationBell from "../../../components/NotificationBell";
 import SaathiHeaderButton from "../../../components/SaathiHeaderButton";
+import { useIsDesktop } from "../../../hook/useDesktop";
 import { useAppTheme } from "../../../src/theme/ThemeProvider";
 import { useNotificationsStore } from "../../../store/notificationsStore";
 
@@ -49,11 +50,12 @@ export default function TabLayout() {
   console.log("[AUTH_DEBUG] TABS_RENDER");
 
   const { theme } = useAppTheme();
+  const isDesktop = useIsDesktop();
 
   return (
     <Tabs
       screenOptions={{
-        headerShown: true,
+        headerShown: !isDesktop,
         header: () => <NavigationHeader />,
         headerStyle: {
           height: 64,
@@ -64,13 +66,17 @@ export default function TabLayout() {
         tabBarActiveTintColor: theme.primary,
         tabBarInactiveTintColor: theme.tabInactive,
 
-        tabBarStyle: {
-          height: 64,
-          paddingTop: 6,
-          paddingBottom: 8,
-          backgroundColor: theme.surface,
-          borderTopColor: theme.border,
-        },
+        tabBarStyle: isDesktop
+          ? {
+              display: "none",
+            }
+          : {
+              height: 64,
+              paddingTop: 6,
+              paddingBottom: 8,
+              backgroundColor: theme.surface,
+              borderTopColor: theme.border,
+            },
 
         tabBarLabelStyle: {
           fontSize: 12,

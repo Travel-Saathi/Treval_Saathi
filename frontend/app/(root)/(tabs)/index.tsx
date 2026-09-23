@@ -20,6 +20,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import NotificationBell from "../../../components/NotificationBell";
 import SaathiHeaderButton from "../../../components/SaathiHeaderButton";
+import DesktopHome from "../../../components/desktop/DesktopHome";
+import { useIsDesktop } from "../../../hook/useDesktop";
 import { useSupabase } from "../../../hook/usesupabase";
 import { searchLocation } from "../../../services/locationApi";
 import { createTrip } from "../../../services/tripsApi";
@@ -313,6 +315,7 @@ export default function HomeScreen() {
   const brandLogoWidth = screenWidth >= 768 ? 140 : 100;
   const brandLogoHeight = brandLogoWidth / 3;
   const unreadCount = useNotificationsStore((state) => state.unreadCount);
+  const isDesktop = useIsDesktop();
   const displayName = user?.firstName || user?.fullName || "User";
 
   console.log("[AUTH_DEBUG] HOME_MOUNT");
@@ -524,6 +527,10 @@ export default function HomeScreen() {
 
   const membersAtMin = members <= 1;
   const membersAtMax = members >= 20;
+
+  if (isDesktop) {
+    return <DesktopHome />;
+  }
 
   return (
     <SafeAreaView
