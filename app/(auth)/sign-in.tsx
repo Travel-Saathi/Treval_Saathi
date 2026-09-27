@@ -45,7 +45,7 @@ const { setActive } = useClerk()
         console.log('SIGN IN ERROR CODE:', error.code)
         console.log('SIGN IN ERROR MESSAGE:', error.message)
 
-        setErrorMessage('Invalid email or password.')
+        setErrorMessage(error.message || 'Invalid email or password.')
         return
       }
 
@@ -149,10 +149,15 @@ const { setActive } = useClerk()
       )
 
       setErrorMessage('Sign in could not be completed.')
-    } catch (error) {
+    } catch (error: any) {
       console.error('SIGN IN ERROR:', error)
 
-      setErrorMessage('Invalid email or password.')
+      setErrorMessage(
+        error?.errors?.[0]?.longMessage ||
+          error?.errors?.[0]?.message ||
+          error?.message ||
+          'Invalid email or password.'
+      )
     } finally {
       setLoading(false)
     }

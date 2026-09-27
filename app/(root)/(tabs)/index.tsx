@@ -7,6 +7,7 @@ import {
   FlatList,
   Image,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,12 +15,41 @@ import {
   TextInput,
   View,
 } from "react-native";
-
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useSupabase } from "../../../hook/usesupabase";
+import {
+  dayDifference,
+  daysUntil,
+  formatDateRange,
+  todayIso,
+} from "../../../lib/tripDates";
+import {
+  listUserTrips,
+  toTripSummary,
+  type TripSummaryCard,
+} from "../../../services/liveTripsApi";
 import { searchLocation } from "../../../services/locationApi";
+import { getJourneyRoute } from "../../../services/routeApi";
+import { searchTransportOptions } from "../../../services/transportApi";
 import { createTrip } from "../../../services/tripsApi";
+import { getWeather } from "../../../services/weatherApi";
+import { useLocationStore } from "../../../store/locationStore";
+import { useUserStore } from "../../../store/userStore";
+
+const THEME = {
+  screenBg: "#F0FAF2",
+  card: "#FFFFFF",
+  cardBorder: "#E3EFE6",
+  radius: 16,
+  borderWidth: 1,
+  textPrimary: "#14231A",
+  textSecondary: "#5B6B60",
+  accent: "#00BC26",
+  accentTint: "#E3F6E8",
+  accentText: "#0B6B24",
+  danger: "#B3261E",
+};
 
 interface CitySelection {
   id: string;
@@ -31,6 +61,53 @@ interface CitySelection {
 
 type CityField = "from" | "to";
 type DateField = "start" | "end";
+
+const STATIC_CITIES: Record<string, CitySelection> = {
+  Bhopal: {
+    id: "static-bhopal",
+    name: "Bhopal",
+    formatted: "Bhopal, Madhya Pradesh, India",
+    latitude: 23.2599,
+    longitude: 77.4126,
+  },
+  Indore: {
+    id: "static-indore",
+    name: "Indore",
+    formatted: "Indore, Madhya Pradesh, India",
+    latitude: 22.7196,
+    longitude: 75.8577,
+  },
+  Delhi: {
+    id: "static-delhi",
+    name: "Delhi",
+    formatted: "New Delhi, Delhi, India",
+    latitude: 28.6139,
+    longitude: 77.209,
+  },
+  Goa: {
+    id: "static-goa",
+    name: "Goa",
+    formatted: "Panaji, Goa, India",
+    latitude: 15.4909,
+    longitude: 73.8278,
+  },
+  Manali: {
+    id: "static-manali",
+    name: "Manali",
+    formatted: "Manali, Himachal Pradesh, India",
+    latitude: 32.2396,
+    longitude: 77.1887,
+  },
+};
+
+const POPULAR_DESTINATIONS = ["Indore", "Delhi", "Goa", "Manali"];
+
+interface LivePreviewData {
+  distance: string;
+  duration: string;
+  weather: string;
+  trains: string;
+}
 
 const MONTH_LABELS = [
   "January",
@@ -71,6 +148,25 @@ function formatDateDisplay(iso: string | null): string {
   const [year, month, day] = parts;
 
   return `${day} ${MONTH_LABELS[month - 1].slice(0, 3)} ${year}`;
+}
+
+function weatherCodeToLabel(code: number | null): string {
+  if (code === null || code === undefined) return "Clear";
+  if (code === 0) return "Clear";
+  if (code === 1 || code === 2 || code === 3) return "Partly cloudy";
+  if (code === 45 || code === 48) return "Foggy";
+  if (code >= 51 && code <= 67) return "Rain";
+  if (code >= 71 && code <= 77) return "Snow";
+  if (code >= 80 && code <= 82) return "Showers";
+  if (code >= 95) return "Thunderstorm";
+  return "Clear";
+}
+
+function formatIndianNumber(value: string): string {
+  const digits = value.replace(/[^0-9]/g, "");
+  if (!digits) return "";
+  const num = Number(digits);
+  return Number.isFinite(num) ? num.toLocaleString("en-IN") : digits;
 }
 
 interface DatePickerModalProps {
@@ -177,7 +273,7 @@ function DatePickerModal({
                 pressed && styles.sheetClosePressed,
               ]}
             >
-              <Ionicons name="close" size={20} color="#1C1C1E" />
+              <Ionicons name="close" size={20} color={THEME.textPrimary} />
             </Pressable>
           </View>
 
@@ -192,7 +288,7 @@ function DatePickerModal({
                 pressed && styles.monthNavButtonPressed,
               ]}
             >
-              <Ionicons name="chevron-back" size={20} color="#1C1C1E" />
+              <Ionicons name="chevron-back" size={20} color={THEME.textPrimary} />
             </Pressable>
 
             <Text style={styles.monthLabel}>
@@ -209,7 +305,7 @@ function DatePickerModal({
                 pressed && styles.monthNavButtonPressed,
               ]}
             >
-              <Ionicons name="chevron-forward" size={20} color="#1C1C1E" />
+              <Ionicons name="chevron-forward" size={20} color={THEME.textPrimary} />
             </Pressable>
           </View>
 
@@ -296,17 +392,32 @@ export default function HomeScreen() {
   const supabase = useSupabase();
   const displayName = user?.firstName || user?.fullName || "User";
 
-  console.log("[AUTH_DEBUG] HOME_MOUNT");
+  // TODO: userStore currently contains no profile avatar field; falling back to Clerk user.imageUrl
+  useUserStore();
+  const { selectedLocation } = useLocationStore();
+  const currentCityName = selectedLocation?.name || "Bhopal";
 
   const [sourceCity, setSourceCity] = useState<CitySelection | null>(null);
   const [destination, setDestination] = useState<CitySelection | null>(null);
   const [startDate, setStartDate] = useState<string | null>(null);
   const [endDate, setEndDate] = useState<string | null>(null);
-  const [budget, setBudget] = useState("");
+  const [rawBudget, setRawBudget] = useState("");
   const [members, setMembers] = useState(1);
   const [formError, setFormError] = useState<string | null>(null);
   const [savingTrip, setSavingTrip] = useState(false);
 
+  // Upcoming trip state
+  const [upcomingTrip, setUpcomingTrip] = useState<TripSummaryCard | null>(null);
+  const [upcomingLoading, setUpcomingLoading] = useState(true);
+
+  // Live preview state
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState<LivePreviewData | null>(null);
+  const previewCacheRef = useRef<Map<string, LivePreviewData>>(new Map());
+  const previewReqIdRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
+
+  // City modal state
   const [cityField, setCityField] = useState<CityField | null>(null);
   const [citySearch, setCitySearch] = useState("");
   const [cityResults, setCityResults] = useState<CitySelection[]>([]);
@@ -316,31 +427,64 @@ export default function HomeScreen() {
 
   const [dateField, setDateField] = useState<DateField | null>(null);
 
+  // Load upcoming trip
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadUpcoming() {
+      if (!user?.id) {
+        setUpcomingLoading(false);
+        return;
+      }
+
+      try {
+        const trips = await listUserTrips(supabase, user.id);
+        if (!isMounted) return;
+
+        const today = todayIso();
+        const futureTrips = trips
+          .filter((t) => t.start_date && t.start_date >= today)
+          .sort((a, b) => (a.start_date! > b.start_date! ? 1 : -1));
+
+        if (futureTrips.length > 0) {
+          setUpcomingTrip(toTripSummary(futureTrips[0]));
+        } else {
+          setUpcomingTrip(null);
+        }
+      } catch (err) {
+        if (isMounted) setUpcomingTrip(null);
+      } finally {
+        if (isMounted) setUpcomingLoading(false);
+      }
+    }
+
+    loadUpcoming();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id, supabase]);
+
+  // City autocomplete search
   useEffect(() => {
     const query = citySearch.trim();
 
     if (query.length < 2) {
       setCityResults([]);
       setCityLoading(false);
-
       cityAbortRef.current?.abort();
       cityAbortRef.current = null;
-
       return;
     }
 
     const timer = setTimeout(async () => {
       cityAbortRef.current?.abort();
-
       const controller = new AbortController();
-
       cityAbortRef.current = controller;
-
       const requestId = ++cityRequestIdRef.current;
 
       try {
         setCityLoading(true);
-
         const results = await searchLocation(query, controller.signal);
 
         if (
@@ -358,8 +502,6 @@ export default function HomeScreen() {
         ) {
           return;
         }
-
-        console.error("City search error:", error);
 
         if (requestId === cityRequestIdRef.current) {
           setCityResults([]);
@@ -379,6 +521,124 @@ export default function HomeScreen() {
     };
   }, [citySearch]);
 
+  // Live preview fetch with parallel Promise.allSettled
+  useEffect(() => {
+    if (!sourceCity || !destination) {
+      setPreviewData(null);
+      setPreviewLoading(false);
+      previewAbortRef.current?.abort();
+      return;
+    }
+
+    const cacheKey = `${sourceCity.name}-${destination.name}-${startDate || "none"}`;
+    if (previewCacheRef.current.has(cacheKey)) {
+      setPreviewData(previewCacheRef.current.get(cacheKey)!);
+      setPreviewLoading(false);
+      return;
+    }
+
+    setPreviewLoading(true);
+
+    const timer = setTimeout(async () => {
+      previewAbortRef.current?.abort();
+      const controller = new AbortController();
+      previewAbortRef.current = controller;
+      const requestId = ++previewReqIdRef.current;
+
+      try {
+        const [routeRes, weatherRes, trainRes] = await Promise.allSettled([
+          getJourneyRoute(
+            [
+              { latitude: sourceCity.latitude, longitude: sourceCity.longitude },
+              { latitude: destination.latitude, longitude: destination.longitude },
+            ],
+            controller.signal
+          ),
+          getWeather(destination.latitude, destination.longitude),
+          searchTransportOptions(
+            "train",
+            {
+              source: sourceCity.name,
+              destination: destination.name,
+              date: startDate,
+            },
+            controller.signal
+          ),
+        ]);
+
+        if (
+          requestId !== previewReqIdRef.current ||
+          controller.signal.aborted
+        ) {
+          return;
+        }
+
+        let distance = "—";
+        let duration = "—";
+        let weather = "—";
+        let trains = "—";
+
+        if (routeRes.status === "fulfilled" && routeRes.value) {
+          const km = routeRes.value.distanceKilometers;
+          if (km !== null && Number.isFinite(km)) {
+            distance = `${Math.round(km)} km`;
+          }
+
+          const mins = routeRes.value.durationMinutes;
+          if (mins !== null && Number.isFinite(mins)) {
+            const hours = Math.floor(mins / 60);
+            const remMins = Math.round(mins % 60);
+            duration = hours > 0 ? `${hours}h ${remMins}m` : `${remMins}m`;
+          }
+        }
+
+        if (weatherRes.status === "fulfilled" && weatherRes.value?.current) {
+          const temp = weatherRes.value.current.temperature;
+          const condition = weatherCodeToLabel(
+            weatherRes.value.current.weatherCode
+          );
+          if (temp !== null && Number.isFinite(temp)) {
+            weather = `${Math.round(temp)}°C · ${condition}`;
+          }
+        }
+
+        if (trainRes.status === "fulfilled" && trainRes.value) {
+          const count = trainRes.value.results?.length ?? 0;
+          if (count === 0) {
+            trains = "No direct trains";
+          } else if (count === 1) {
+            trains = "1 direct train";
+          } else {
+            trains = `${count} direct trains`;
+          }
+        }
+
+        const data: LivePreviewData = {
+          distance,
+          duration,
+          weather,
+          trains,
+        };
+
+        previewCacheRef.current.set(cacheKey, data);
+        setPreviewData(data);
+      } catch {
+        // Fallback gracefully
+      } finally {
+        if (
+          requestId === previewReqIdRef.current &&
+          !controller.signal.aborted
+        ) {
+          setPreviewLoading(false);
+        }
+      }
+    }, 400);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [sourceCity, destination, startDate]);
+
   function openCityPicker(field: CityField) {
     setFormError(null);
     setCityField(field);
@@ -389,7 +649,6 @@ export default function HomeScreen() {
     setCitySearch("");
     setCityResults([]);
     setCityLoading(false);
-
     cityAbortRef.current?.abort();
   }
 
@@ -399,9 +658,15 @@ export default function HomeScreen() {
     } else if (cityField === "to") {
       setDestination(location);
     }
-
     setFormError(null);
     closeCityPicker();
+  }
+
+  function handleSwapCities() {
+    const temp = sourceCity;
+    setSourceCity(destination);
+    setDestination(temp);
+    setFormError(null);
   }
 
   function openDatePicker(field: DateField) {
@@ -412,53 +677,68 @@ export default function HomeScreen() {
   function handleDateSelect(iso: string) {
     if (dateField === "start") {
       setStartDate(iso);
-
       if (endDate && iso > endDate) {
         setEndDate(null);
       }
     } else if (dateField === "end") {
       setEndDate(iso);
     }
-
     setDateField(null);
   }
 
+  function handleBudgetChange(text: string) {
+    const raw = text.replace(/[^0-9]/g, "");
+    setRawBudget(raw);
+  }
+
   function updateMembers(delta: number) {
-    setMembers((current) =>
-      Math.min(20, Math.max(1, current + delta))
-    );
+    setMembers((current) => Math.min(10, Math.max(1, current + delta)));
+  }
+
+  function handleSelectPopular(destName: string) {
+    const sourceObj = selectedLocation || STATIC_CITIES["Bhopal"];
+    const destObj = STATIC_CITIES[destName] || {
+      id: `static-${destName.toLowerCase()}`,
+      name: destName,
+      formatted: `${destName}, India`,
+      latitude: 23.2599,
+      longitude: 77.4126,
+    };
+    setSourceCity(sourceObj);
+    setDestination(destObj);
+    setFormError(null);
   }
 
   async function handleSearchJourney() {
     setFormError(null);
 
     if (!sourceCity) {
-      setFormError("Please select your source city.");
+      setFormError("Enter a source city");
       return;
     }
 
     if (!destination) {
-      setFormError("Please select your destination.");
+      setFormError("Select a destination");
       return;
     }
 
     if (!startDate) {
-      setFormError("Please select a start date.");
+      setFormError("Select a start date");
       return;
     }
 
     if (!endDate) {
-      setFormError("Please select an end date.");
+      setFormError("Select an end date");
       return;
     }
 
     if (endDate < startDate) {
-      setFormError("End date cannot be before the start date.");
+      setFormError("End date is before start date");
       return;
     }
 
     if (!user?.id) {
-      setFormError("Please sign in to plan a journey.");
+      setFormError("Sign in to plan a journey");
       return;
     }
 
@@ -466,10 +746,8 @@ export default function HomeScreen() {
     setFormError(null);
 
     try {
-      const budgetNumber = budget.trim() ? Number(budget) : NaN;
-      const parsedBudget = Number.isFinite(budgetNumber)
-        ? budgetNumber
-        : null;
+      const budgetNumber = rawBudget.trim() ? Number(rawBudget) : NaN;
+      const parsedBudget = Number.isFinite(budgetNumber) ? budgetNumber : null;
 
       const trip = await createTrip(supabase, {
         created_by: user.id,
@@ -494,396 +772,586 @@ export default function HomeScreen() {
       });
     } catch (error) {
       console.error("TRIP CREATE ERROR:", error);
-
-      setFormError(
-        "Could not save your journey. Please try again."
-      );
+      setFormError("Could not save your journey");
     } finally {
       setSavingTrip(false);
     }
   }
 
+  // Derived trip duration text and date error
+  let tripDurationText: string | null = null;
+  let dateInlineError: string | null = null;
+  if (startDate && endDate) {
+    if (endDate < startDate) {
+      dateInlineError = "End date is before start date";
+    } else {
+      const diff = dayDifference(startDate, endDate);
+      if (diff === 0) {
+        tripDurationText = "Same day trip";
+      } else if (diff === 1) {
+        tripDurationText = "1 night";
+      } else {
+        tripDurationText = `${diff} nights`;
+      }
+    }
+  }
+
   const membersAtMin = members <= 1;
-  const membersAtMax = members >= 20;
+  const membersAtMax = members >= 10;
+  const bothCitiesSelected = Boolean(sourceCity && destination);
 
   return (
     <SafeAreaView style={styles.screen}>
-      <View style={styles.header}>
-        <View style={styles.brandGroup}>
-          <Image
-            source={require("../../../assets/images/2logo.png")}
-            style={styles.brandLogo}
-          />
-          <Text style={styles.greeting}>Hi, {displayName}</Text>
-          <Ionicons name="location-outline" size={18} color="#00bc26" />
-        </View>
-
-        <View style={styles.actions}>
-          <Pressable
-            accessibilityLabel="Notifications"
-            style={({ pressed }) => [
-              styles.iconButton,
-              pressed && styles.avatarPressed,
-            ]}
-          >
-            <Ionicons name="notifications-outline" size={24} color="#1C1C1E" />
-          </Pressable>
-
-          <Pressable
-            accessibilityLabel="Open profile"
-            onPress={() => router.push("/(root)/(tabs)/profile")}
-            style={({ pressed }) => [
-              styles.avatarButton,
-              pressed && styles.avatarPressed,
-            ]}
-          >
-            {user?.imageUrl ? (
-              <Image source={{ uri: user.imageUrl }} style={styles.avatar} />
-            ) : (
-              <View style={styles.avatarFallback}>
-                <Text style={styles.avatarInitial}>
-                  {displayName.charAt(0).toUpperCase()}
-                </Text>
-              </View>
-            )}
-          </Pressable>
-        </View>
-      </View>
-
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* MY JOURNEY PLAN */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>My Journey Plan</Text>
-
-          <Text style={styles.sectionSubtitle}>
-            Plan your trip, your way.
-          </Text>
-
-          <View style={styles.journeyCard}>
-            {/* From / To */}
-            <View style={styles.tripRow}>
-              <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>From</Text>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Select source city"
-                  onPress={() => openCityPicker("from")}
-                  style={({ pressed }) => [
-                    styles.cityFieldShell,
-                    pressed && styles.fieldPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="navigate-outline"
-                    size={17}
-                    color="#00BC26"
-                    style={styles.fieldIcon}
-                  />
-
-                  <Text
-                    style={[
-                      styles.fieldValue,
-                      !sourceCity && styles.fieldPlaceholder,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {sourceCity ? sourceCity.name : "Select source city"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.tripArrow}>
+      <View style={styles.webContainer}>
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.brandGroup}>
+            <Image
+              source={require("../../../assets/images/2logo.png")}
+              style={styles.brandLogo}
+            />
+            <View style={styles.greetingContainer}>
+              <Text style={styles.greeting}>Hi, {displayName}</Text>
+              <View style={styles.locationRow}>
                 <Ionicons
-                  name="arrow-forward"
-                  size={16}
-                  color="#B0B5BC"
+                  name="location-sharp"
+                  size={13}
+                  color={THEME.accent}
                 />
-              </View>
-
-              <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>To</Text>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Select destination"
-                  onPress={() => openCityPicker("to")}
-                  style={({ pressed }) => [
-                    styles.cityFieldShell,
-                    pressed && styles.fieldPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="location-outline"
-                    size={17}
-                    color="#00BC26"
-                    style={styles.fieldIcon}
-                  />
-
-                  <Text
-                    style={[
-                      styles.fieldValue,
-                      !destination && styles.fieldPlaceholder,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {destination
-                      ? destination.name
-                      : "Select destination"}
-                  </Text>
-                </Pressable>
+                <Text style={styles.locationText}>{currentCityName}</Text>
               </View>
             </View>
+          </View>
 
-            {/* Start / End dates */}
-            <View style={styles.tripRow}>
-              <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>Start date</Text>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Select start date"
-                  onPress={() => openDatePicker("start")}
-                  style={({ pressed }) => [
-                    styles.dateFieldShell,
-                    pressed && styles.fieldPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="calendar-outline"
-                    size={17}
-                    color="#00BC26"
-                    style={styles.fieldIcon}
-                  />
-
-                  <Text
-                    style={[
-                      styles.fieldValue,
-                      !startDate && styles.fieldPlaceholder,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {startDate
-                      ? formatDateDisplay(startDate)
-                      : "Select date"}
-                  </Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>End date</Text>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Select end date"
-                  onPress={() => openDatePicker("end")}
-                  style={({ pressed }) => [
-                    styles.dateFieldShell,
-                    pressed && styles.fieldPressed,
-                  ]}
-                >
-                  <Ionicons
-                    name="calendar-outline"
-                    size={17}
-                    color="#00BC26"
-                    style={styles.fieldIcon}
-                  />
-
-                  <Text
-                    style={[
-                      styles.fieldValue,
-                      !endDate && styles.fieldPlaceholder,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {endDate
-                      ? formatDateDisplay(endDate)
-                      : "Select date"}
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-
-            {/* Budget / Members */}
-            <View style={styles.tripRow}>
-              <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>Budget (optional)</Text>
-
-                <View style={styles.budgetShell}>
-                  <Text style={styles.budgetSymbol}>₹</Text>
-
-                  <TextInput
-                    style={styles.budgetInput}
-                    placeholder="Amount"
-                    placeholderTextColor="#9CA1A9"
-                    value={budget}
-                    onChangeText={setBudget}
-                    keyboardType="number-pad"
-                    maxLength={9}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.tripField}>
-                <Text style={styles.fieldLabel}>Members</Text>
-
-                <View style={styles.membersShell}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Decrease members"
-                    accessibilityState={{ disabled: membersAtMin }}
-                    disabled={membersAtMin}
-                    onPress={() => updateMembers(-1)}
-                    style={({ pressed }) => [
-                      styles.stepperButton,
-                      pressed && styles.stepperButtonPressed,
-                    ]}
-                  >
-                    <Ionicons
-                      name="remove"
-                      size={18}
-                      color={membersAtMin ? "#B8DDBE" : "#00BC26"}
-                    />
-                  </Pressable>
-
-                  <Text style={styles.membersValue}>{members}</Text>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Increase members"
-                    accessibilityState={{ disabled: membersAtMax }}
-                    disabled={membersAtMax}
-                    onPress={() => updateMembers(1)}
-                    style={({ pressed }) => [
-                      styles.stepperButton,
-                      pressed && styles.stepperButtonPressed,
-                    ]}
-                  >
-                    <Ionicons
-                      name="add"
-                      size={18}
-                      color={membersAtMax ? "#B8DDBE" : "#00BC26"}
-                    />
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-
-            {formError ? (
-              <View style={styles.errorBox}>
-                <Ionicons
-                  name="alert-circle-outline"
-                  size={16}
-                  color="#B42318"
-                />
-
-                <Text style={styles.errorText}>{formError}</Text>
-              </View>
-            ) : null}
-
+          <View style={styles.actions}>
             <Pressable
-              accessibilityRole="button"
-              accessibilityState={{
-                disabled: savingTrip,
-              }}
-              disabled={savingTrip}
-              onPress={handleSearchJourney}
+              accessibilityLabel="Notifications"
               style={({ pressed }) => [
-                styles.searchButton,
-                pressed && styles.searchButtonPressed,
-                savingTrip && styles.searchButtonDisabled,
+                styles.iconButton,
+                pressed && styles.iconPressed,
               ]}
             >
-              {savingTrip ? (
-                <>
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                  <Text style={styles.searchButtonText}>
-                    Saving journey...
-                  </Text>
-                </>
+              <Ionicons
+                name="notifications-outline"
+                size={24}
+                color={THEME.textPrimary}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityLabel="Open profile"
+              onPress={() => router.push("/(root)/(tabs)/profile")}
+              style={({ pressed }) => [
+                styles.avatarButton,
+                pressed && styles.avatarPressed,
+              ]}
+            >
+              {user?.imageUrl ? (
+                <Image source={{ uri: user.imageUrl }} style={styles.avatar} />
               ) : (
-                <>
-                  <Text style={styles.searchButtonText}>
-                    Search Journey
+                <View style={styles.avatarFallback}>
+                  <Text style={styles.avatarInitial}>
+                    {displayName.charAt(0).toUpperCase()}
                   </Text>
-                  <Ionicons
-                    name="search"
-                    size={19}
-                    color="#FFFFFF"
-                  />
-                </>
+                </View>
               )}
             </Pressable>
           </View>
         </View>
 
-        {/* EXPLORE GROUPS */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Explore Groups</Text>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* UPCOMING TRIP SECTION */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Upcoming trip</Text>
+            <Text style={styles.sectionSubtitle}>
+              Stay ready for your next adventure.
+            </Text>
 
-          <Text style={styles.sectionSubtitle}>
-            Join groups, share experiences, make memories.
-          </Text>
+            {upcomingLoading ? (
+              <View style={styles.upcomingCard}>
+                <ActivityIndicator size="small" color={THEME.accent} />
+              </View>
+            ) : upcomingTrip ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Upcoming trip to ${upcomingTrip.destination || "destination"}`}
+                onPress={() =>
+                  router.push({
+                    pathname: "../trip-details",
+                    params: { tripId: upcomingTrip.id },
+                  })
+                }
+                style={({ pressed }) => [
+                  styles.upcomingCard,
+                  pressed && styles.cardPressed,
+                ]}
+              >
+                <View style={styles.upcomingTopRow}>
+                  <View style={styles.upcomingDestinationGroup}>
+                    <Text style={styles.upcomingDestination}>
+                      {upcomingTrip.destination || "Upcoming journey"}
+                    </Text>
+                    <Text style={styles.upcomingDateRange}>
+                      {formatDateRange(
+                        upcomingTrip.start_date,
+                        upcomingTrip.end_date
+                      )}
+                    </Text>
+                  </View>
 
-          <View style={styles.placeholderCard}>
-            <View style={styles.placeholderIcon}>
-              <Ionicons
-                name="people-outline"
-                size={24}
-                color="#00BC26"
-              />
-            </View>
+                  <View style={styles.pillContainer}>
+                    <Text style={styles.pillText}>
+                      {upcomingTrip.daysUntilStart === 0
+                        ? "Starts today"
+                        : upcomingTrip.daysUntilStart === 1
+                          ? "in 1 day"
+                          : `in ${upcomingTrip.daysUntilStart ?? daysUntil(upcomingTrip.start_date) ?? 0} days`}
+                    </Text>
+                  </View>
+                </View>
 
-            <View style={styles.placeholderBody}>
-              <Text style={styles.placeholderTitle}>
-                Group journeys coming soon
-              </Text>
+                <View style={styles.upcomingFooter}>
+                  <View style={styles.upcomingMetaItem}>
+                    <Ionicons
+                      name="people-outline"
+                      size={15}
+                      color={THEME.textSecondary}
+                    />
+                    <Text style={styles.upcomingMetaText}>
+                      {upcomingTrip.members || 1}{" "}
+                      {upcomingTrip.members === 1 ? "member" : "members"}
+                    </Text>
+                  </View>
 
-              <Text style={styles.placeholderText}>
-                Join fellow travellers, share experiences and plan
-                trips together.
-              </Text>
+                  <View style={styles.viewDetailsRow}>
+                    <Text style={styles.viewDetailsText}>View details</Text>
+                    <Ionicons
+                      name="chevron-forward"
+                      size={15}
+                      color={THEME.accentText}
+                    />
+                  </View>
+                </View>
+              </Pressable>
+            ) : (
+              <View style={styles.upcomingCard}>
+                <View style={styles.emptyIconCircle}>
+                  <Ionicons
+                    name="calendar-outline"
+                    size={20}
+                    color={THEME.accentText}
+                  />
+                </View>
+                <View style={styles.emptyBody}>
+                  <Text style={styles.emptyTitle}>Plan your first trip</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Create a journey below to see your schedule, weather, and stops here.
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+
+          {/* MY JOURNEY PLAN FORM */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>My journey plan</Text>
+            <Text style={styles.sectionSubtitle}>
+              Plan your trip, your way.
+            </Text>
+
+            <View style={styles.journeyCard}>
+              {/* From / Swap / To */}
+              <View style={styles.tripRow}>
+                <View style={styles.tripField}>
+                  <Text style={styles.fieldLabel}>From</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Select source city"
+                    onPress={() => openCityPicker("from")}
+                    style={({ pressed }) => [
+                      styles.cityFieldShell,
+                      pressed && styles.fieldPressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="navigate-outline"
+                      size={17}
+                      color={THEME.accent}
+                      style={styles.fieldIcon}
+                    />
+                    <Text
+                      style={[
+                        styles.fieldValue,
+                        !sourceCity && styles.fieldPlaceholder,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {sourceCity ? sourceCity.name : "Select source city"}
+                    </Text>
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Swap source and destination"
+                  onPress={handleSwapCities}
+                  style={({ pressed }) => [
+                    styles.swapButton,
+                    pressed && styles.swapButtonPressed,
+                  ]}
+                >
+                  <Ionicons
+                    name="swap-horizontal"
+                    size={16}
+                    color={THEME.accentText}
+                  />
+                </Pressable>
+
+                <View style={styles.tripField}>
+                  <Text style={styles.fieldLabel}>To</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Select destination"
+                    onPress={() => openCityPicker("to")}
+                    style={({ pressed }) => [
+                      styles.cityFieldShell,
+                      pressed && styles.fieldPressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="location-outline"
+                      size={17}
+                      color={THEME.accent}
+                      style={styles.fieldIcon}
+                    />
+                    <Text
+                      style={[
+                        styles.fieldValue,
+                        !destination && styles.fieldPlaceholder,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {destination ? destination.name : "Select destination"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* Start / End dates */}
+              <View style={styles.tripRow}>
+                <View style={styles.tripField}>
+                  <Text style={styles.fieldLabel}>Start date</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Select start date"
+                    onPress={() => openDatePicker("start")}
+                    style={({ pressed }) => [
+                      styles.dateFieldShell,
+                      pressed && styles.fieldPressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="calendar-outline"
+                      size={17}
+                      color={THEME.accent}
+                      style={styles.fieldIcon}
+                    />
+                    <Text
+                      style={[
+                        styles.fieldValue,
+                        !startDate && styles.fieldPlaceholder,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {startDate ? formatDateDisplay(startDate) : "Select date"}
+                    </Text>
+                  </Pressable>
+                </View>
+
+                <View style={styles.tripField}>
+                  <Text style={styles.fieldLabel}>End date</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Select end date"
+                    onPress={() => openDatePicker("end")}
+                    style={({ pressed }) => [
+                      styles.dateFieldShell,
+                      pressed && styles.fieldPressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="calendar-outline"
+                      size={17}
+                      color={THEME.accent}
+                      style={styles.fieldIcon}
+                    />
+                    <Text
+                      style={[
+                        styles.fieldValue,
+                        !endDate && styles.fieldPlaceholder,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {endDate ? formatDateDisplay(endDate) : "Select date"}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+
+              {/* Date duration text / inline error */}
+              {dateInlineError ? (
+                <View style={styles.dateInlineErrorBox}>
+                  <Ionicons
+                    name="alert-circle-outline"
+                    size={14}
+                    color={THEME.danger}
+                  />
+                  <Text style={styles.dateInlineErrorText}>
+                    {dateInlineError}
+                  </Text>
+                </View>
+              ) : tripDurationText ? (
+                <View style={styles.tripLengthRow}>
+                  <Ionicons
+                    name="time-outline"
+                    size={14}
+                    color={THEME.accentText}
+                  />
+                  <Text style={styles.tripLengthText}>{tripDurationText}</Text>
+                </View>
+              ) : null}
+
+              {/* Budget / Members */}
+              <View style={styles.tripRow}>
+                <View style={styles.tripField}>
+                  <Text style={styles.fieldLabel}>Budget (optional)</Text>
+                  <View style={styles.budgetShell}>
+                    <Text style={styles.budgetSymbol}>₹</Text>
+                    <TextInput
+                      style={styles.budgetInput}
+                      placeholder="Amount"
+                      placeholderTextColor="#9CA1A9"
+                      value={formatIndianNumber(rawBudget)}
+                      onChangeText={handleBudgetChange}
+                      keyboardType="number-pad"
+                      maxLength={12}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.tripField}>
+                  <Text style={styles.fieldLabel}>Members</Text>
+                  <View style={styles.membersShell}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Decrease members"
+                      accessibilityState={{ disabled: membersAtMin }}
+                      disabled={membersAtMin}
+                      onPress={() => updateMembers(-1)}
+                      style={({ pressed }) => [
+                        styles.stepperButton,
+                        pressed && styles.stepperButtonPressed,
+                      ]}
+                    >
+                      <Ionicons
+                        name="remove"
+                        size={18}
+                        color={membersAtMin ? "#B8DDBE" : THEME.accent}
+                      />
+                    </Pressable>
+
+                    <Text style={styles.membersValue}>{members}</Text>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Increase members"
+                      accessibilityState={{ disabled: membersAtMax }}
+                      disabled={membersAtMax}
+                      onPress={() => updateMembers(1)}
+                      style={({ pressed }) => [
+                        styles.stepperButton,
+                        pressed && styles.stepperButtonPressed,
+                      ]}
+                    >
+                      <Ionicons
+                        name="add"
+                        size={18}
+                        color={membersAtMax ? "#B8DDBE" : THEME.accent}
+                      />
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+
+              {/* LIVE PREVIEW STRIP */}
+              <View style={styles.previewSection}>
+                <Text style={styles.previewTitle}>Live preview</Text>
+
+                {!bothCitiesSelected ? (
+                  <Text style={styles.previewMutedText}>
+                    Pick two cities to see distance, weather, and trains before you search.
+                  </Text>
+                ) : previewLoading ? (
+                  <View style={styles.previewGrid}>
+                    {[1, 2, 3, 4].map((i) => (
+                      <View key={i} style={styles.previewCardSkeleton}>
+                        <ActivityIndicator size="small" color={THEME.accent} />
+                      </View>
+                    ))}
+                  </View>
+                ) : previewData ? (
+                  <View style={styles.previewGrid}>
+                    <View style={styles.previewCard}>
+                      <View style={styles.previewIconCircle}>
+                        <Ionicons
+                          name="speedometer-outline"
+                          size={14}
+                          color={THEME.accentText}
+                        />
+                      </View>
+                      <Text style={styles.previewLabel}>Distance</Text>
+                      <Text style={styles.previewValue}>
+                        {previewData.distance}
+                      </Text>
+                    </View>
+
+                    <View style={styles.previewCard}>
+                      <View style={styles.previewIconCircle}>
+                        <Ionicons
+                          name="car-outline"
+                          size={14}
+                          color={THEME.accentText}
+                        />
+                      </View>
+                      <Text style={styles.previewLabel}>Drive time</Text>
+                      <Text style={styles.previewValue}>
+                        {previewData.duration}
+                      </Text>
+                    </View>
+
+                    <View style={styles.previewCard}>
+                      <View style={styles.previewIconCircle}>
+                        <Ionicons
+                          name="partly-sunny-outline"
+                          size={14}
+                          color={THEME.accentText}
+                        />
+                      </View>
+                      <Text style={styles.previewLabel}>Weather</Text>
+                      <Text style={styles.previewValue}>
+                        {previewData.weather}
+                      </Text>
+                    </View>
+
+                    <View style={styles.previewCard}>
+                      <View style={styles.previewIconCircle}>
+                        <Ionicons
+                          name="train-outline"
+                          size={14}
+                          color={THEME.accentText}
+                        />
+                      </View>
+                      <Text style={styles.previewLabel}>Trains</Text>
+                      <Text style={styles.previewValue}>
+                        {previewData.trains}
+                      </Text>
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+
+              {formError ? (
+                <View style={styles.errorBox}>
+                  <Ionicons
+                    name="alert-circle-outline"
+                    size={16}
+                    color={THEME.danger}
+                  />
+                  <Text style={styles.errorText}>{formError}</Text>
+                </View>
+              ) : null}
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled: savingTrip,
+                }}
+                disabled={savingTrip}
+                onPress={handleSearchJourney}
+                style={({ pressed }) => [
+                  styles.searchButton,
+                  pressed && styles.searchButtonPressed,
+                  savingTrip && styles.searchButtonDisabled,
+                ]}
+              >
+                {savingTrip ? (
+                  <>
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                    <Text style={styles.searchButtonText}>
+                      Saving journey...
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.searchButtonText}>Search journey</Text>
+                    <Ionicons name="search" size={19} color="#FFFFFF" />
+                  </>
+                )}
+              </Pressable>
             </View>
           </View>
-        </View>
 
-        {/* CITY PLANS & NEARBY */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>City Plans & Nearby</Text>
+          {/* POPULAR ROUTES */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>
+              Popular from {currentCityName}
+            </Text>
+            <Text style={styles.sectionSubtitle}>
+              Top destinations travellers love visiting.
+            </Text>
 
-          <Text style={styles.sectionSubtitle}>
-            Discover city plans and nearby getaways.
-          </Text>
-
-          <View style={styles.placeholderCard}>
-            <View style={styles.placeholderIcon}>
-              <Ionicons
-                name="map-outline"
-                size={24}
-                color="#00BC26"
-              />
-            </View>
-
-            <View style={styles.placeholderBody}>
-              <Text style={styles.placeholderTitle}>
-                City plans are on the way
-              </Text>
-
-              <Text style={styles.placeholderText}>
-                Explore curated city plans and nearby destinations
-                soon.
-              </Text>
+            <View style={styles.chipsRow}>
+              {POPULAR_DESTINATIONS.map((destName) => {
+                const isSelected = destination?.name === destName;
+                return (
+                  <Pressable
+                    key={destName}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Choose route to ${destName}`}
+                    onPress={() => handleSelectPopular(destName)}
+                    style={({ pressed }) => [
+                      styles.popularChip,
+                      isSelected && styles.popularChipSelected,
+                      pressed && styles.chipPressed,
+                    ]}
+                  >
+                    <Ionicons
+                      name="location-outline"
+                      size={14}
+                      color={isSelected ? THEME.accentText : THEME.textSecondary}
+                    />
+                    <Text
+                      style={[
+                        styles.popularChipText,
+                        isSelected && styles.popularChipTextSelected,
+                      ]}
+                    >
+                      {destName}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
           </View>
-        </View>
-      </ScrollView>
+        </ScrollView>
+      </View>
 
-      {/* City picker */}
+      {/* City picker modal */}
       <Modal
         visible={cityField !== null}
         transparent
@@ -909,7 +1377,7 @@ export default function HomeScreen() {
                   pressed && styles.sheetClosePressed,
                 ]}
               >
-                <Ionicons name="close" size={20} color="#1C1C1E" />
+                <Ionicons name="close" size={20} color={THEME.textPrimary} />
               </Pressable>
             </View>
 
@@ -917,7 +1385,7 @@ export default function HomeScreen() {
               <Ionicons
                 name="search"
                 size={20}
-                color="#6B7280"
+                color={THEME.textSecondary}
                 style={styles.searchIcon}
               />
 
@@ -936,7 +1404,7 @@ export default function HomeScreen() {
               {cityLoading && (
                 <ActivityIndicator
                   size="small"
-                  color="#00BC26"
+                  color={THEME.accent}
                   style={styles.searchLoader}
                 />
               )}
@@ -962,14 +1430,8 @@ export default function HomeScreen() {
 
             {cityLoading ? (
               <View style={styles.cityLoading}>
-                <ActivityIndicator
-                  size="large"
-                  color="#00BC26"
-                />
-
-                <Text style={styles.cityLoadingText}>
-                  Searching...
-                </Text>
+                <ActivityIndicator size="large" color={THEME.accent} />
+                <Text style={styles.cityLoadingText}>Searching...</Text>
               </View>
             ) : (
               <FlatList
@@ -999,15 +1461,12 @@ export default function HomeScreen() {
                       <Ionicons
                         name="location"
                         size={20}
-                        color="#00BC26"
+                        color={THEME.accent}
                       />
                     </View>
 
                     <View style={styles.cityResultText}>
-                      <Text style={styles.cityName}>
-                        {item.name}
-                      </Text>
-
+                      <Text style={styles.cityName}>{item.name}</Text>
                       <Text
                         style={styles.cityAddress}
                         numberOfLines={2}
@@ -1029,13 +1488,11 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* Date picker */}
+      {/* Date picker modal */}
       <DatePickerModal
         visible={dateField !== null}
         title={
-          dateField === "start"
-            ? "Select start date"
-            : "Select end date"
+          dateField === "start" ? "Select start date" : "Select end date"
         }
         selected={dateField === "start" ? startDate : endDate}
         minDate={dateField === "end" ? startDate : null}
@@ -1049,370 +1506,551 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: THEME.screenBg,
+  },
+  webContainer: {
+    flex: 1,
+    width: "100%",
+    maxWidth: 720,
+    alignSelf: "center",
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
     paddingVertical: 12,
   },
   brandGroup: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: 10,
   },
   brandLogo: {
-    width: 34,
-    height: 34,
+    width: 36,
+    height: 36,
     resizeMode: "contain",
   },
+  greetingContainer: {
+    justifyContent: "center",
+  },
   greeting: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: "700",
-    color: "#1C1C1E",
+    color: THEME.textPrimary,
+  },
+  locationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    marginTop: 2,
+  },
+  locationText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: THEME.textSecondary,
   },
   actions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: 12,
   },
   iconButton: {
-    width: 32,
-    height: 40,
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
   },
+  iconPressed: {
+    opacity: 0.6,
+  },
   avatarButton: {
-    borderRadius: 24,
+    borderRadius: 20,
   },
   avatarPressed: {
     opacity: 0.7,
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
   },
   avatarFallback: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 20,
-    backgroundColor: "#E5E5EA",
+    borderRadius: 19,
+    backgroundColor: THEME.accentTint,
   },
   avatarInitial: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: "700",
-    color: "#3A3A3C",
+    color: THEME.accentText,
   },
 
   scroll: {
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 4,
-    paddingBottom: 40,
+    paddingBottom: 32,
+    gap: 20,
   },
 
-  section: {
-    marginBottom: 28,
-  },
+  section: {},
   sectionTitle: {
-    fontSize: 21,
+    fontSize: 19,
     fontWeight: "800",
-    color: "#1C1C1E",
-    letterSpacing: -0.3,
+    color: THEME.textPrimary,
+    letterSpacing: -0.2,
   },
   sectionSubtitle: {
-    marginTop: 4,
-    fontSize: 14,
-    lineHeight: 20,
-    color: "#6B7280",
+    marginTop: 2,
+    fontSize: 13,
+    lineHeight: 18,
+    color: THEME.textSecondary,
   },
 
-  journeyCard: {
-    marginTop: 16,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
+  // Upcoming card
+  upcomingCard: {
+    marginTop: 10,
+    backgroundColor: THEME.card,
+    borderRadius: THEME.radius,
+    borderWidth: THEME.borderWidth,
+    borderColor: THEME.cardBorder,
     padding: 16,
-    shadowColor: "#000000",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    elevation: 2,
+    flexDirection: "column",
+    gap: 12,
+  },
+  cardPressed: {
+    opacity: 0.9,
+  },
+  upcomingTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+  },
+  upcomingDestinationGroup: {
+    flex: 1,
+    marginRight: 10,
+  },
+  upcomingDestination: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: THEME.textPrimary,
+  },
+  upcomingDateRange: {
+    marginTop: 3,
+    fontSize: 13,
+    color: THEME.textSecondary,
+  },
+  pillContainer: {
+    backgroundColor: THEME.accentTint,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  pillText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: THEME.accentText,
+  },
+  upcomingFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: THEME.cardBorder,
+  },
+  upcomingMetaItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  upcomingMetaText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: THEME.textSecondary,
+  },
+  viewDetailsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+  viewDetailsText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: THEME.accentText,
   },
 
+  // Empty upcoming
+  emptyIconCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: THEME.accentTint,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  emptyBody: {
+    flex: 1,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: THEME.textPrimary,
+  },
+  emptySubtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    color: THEME.textSecondary,
+    lineHeight: 18,
+  },
+
+  // Journey Card Form
+  journeyCard: {
+    marginTop: 10,
+    backgroundColor: THEME.card,
+    borderRadius: THEME.radius,
+    borderWidth: THEME.borderWidth,
+    borderColor: THEME.cardBorder,
+    padding: 16,
+  },
   tripRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 10,
-    marginBottom: 14,
+    gap: 8,
+    marginBottom: 12,
   },
   tripField: {
     flex: 1,
   },
-  tripArrow: {
-    width: 22,
+  swapButton: {
+    width: 34,
     height: 46,
+    borderRadius: 17,
+    backgroundColor: THEME.accentTint,
     alignItems: "center",
     justifyContent: "center",
-    paddingBottom: 1,
+    marginBottom: 1,
+  },
+  swapButtonPressed: {
+    transform: [{ scale: 0.92 }],
   },
 
   fieldLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "700",
-    color: "#6B7280",
+    color: THEME.textSecondary,
     textTransform: "uppercase",
     letterSpacing: 0.4,
-    marginBottom: 7,
+    marginBottom: 6,
   },
-
   cityFieldShell: {
     minHeight: 46,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#F7F9F8",
+    borderColor: THEME.cardBorder,
+    backgroundColor: "#FAFCFA",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
   },
   fieldPressed: {
-    backgroundColor: "#F0F2F1",
-    transform: [
-      {
-        scale: 0.99,
-      },
-    ],
+    backgroundColor: "#F0FAF2",
+    transform: [{ scale: 0.99 }],
   },
   fieldIcon: {
     marginRight: 8,
   },
-
-  dateFieldShell: {
-    minHeight: 46,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#F7F9F8",
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-  },
   fieldValue: {
     flex: 1,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
-    color: "#1C1C1E",
+    color: THEME.textPrimary,
   },
   fieldPlaceholder: {
     color: "#9CA1A9",
     fontWeight: "500",
   },
 
+  dateFieldShell: {
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
+    backgroundColor: "#FAFCFA",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+  },
+  tripLengthRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: -4,
+    marginBottom: 10,
+    marginLeft: 2,
+  },
+  tripLengthText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: THEME.accentText,
+  },
+  dateInlineErrorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginTop: -4,
+    marginBottom: 10,
+    marginLeft: 2,
+  },
+  dateInlineErrorText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: THEME.danger,
+  },
+
   budgetShell: {
     minHeight: 46,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#F7F9F8",
+    borderColor: THEME.cardBorder,
+    backgroundColor: "#FAFCFA",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
   },
   budgetSymbol: {
     fontSize: 15,
-    fontWeight: "800",
-    color: "#08751F",
+    fontWeight: "700",
+    color: THEME.accentText,
     marginRight: 6,
   },
   budgetInput: {
     flex: 1,
     height: 46,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
-    color: "#1C1C1E",
+    color: THEME.textPrimary,
   },
 
   membersShell: {
     minHeight: 46,
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#F7F9F8",
+    borderColor: THEME.cardBorder,
+    backgroundColor: "#FAFCFA",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
   },
   stepperButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: "#E7F9EB",
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: THEME.accentTint,
     alignItems: "center",
     justifyContent: "center",
   },
   stepperButtonPressed: {
-    transform: [
-      {
-        scale: 0.94,
-      },
-    ],
+    transform: [{ scale: 0.94 }],
   },
   membersValue: {
-    minWidth: 34,
+    minWidth: 28,
     textAlign: "center",
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#1C1C1E",
+    fontSize: 15,
+    fontWeight: "700",
+    color: THEME.textPrimary,
+  },
+
+  // Live preview
+  previewSection: {
+    marginVertical: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: THEME.cardBorder,
+  },
+  previewTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: THEME.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+    marginBottom: 8,
+  },
+  previewMutedText: {
+    fontSize: 13,
+    color: THEME.textSecondary,
+    lineHeight: 18,
+    paddingVertical: 4,
+  },
+  previewGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  previewCard: {
+    width: "48%",
+    flexGrow: 1,
+    backgroundColor: "#F7FAF8",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
+    padding: 10,
+  },
+  previewCardSkeleton: {
+    width: "48%",
+    flexGrow: 1,
+    height: 64,
+    backgroundColor: "#F7FAF8",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: THEME.accentTint,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  previewLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: THEME.textSecondary,
+  },
+  previewValue: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: THEME.textPrimary,
+    marginTop: 2,
   },
 
   errorBox: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     backgroundColor: "#FFF4F1",
     borderWidth: 1,
     borderColor: "#FFD8D2",
-    borderRadius: 12,
+    borderRadius: 10,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     marginBottom: 12,
   },
   errorText: {
     flex: 1,
     fontSize: 13,
-    lineHeight: 18,
-    color: "#B42318",
+    fontWeight: "600",
+    color: THEME.danger,
   },
 
   searchButton: {
-    height: 54,
-    borderRadius: 16,
-    backgroundColor: "#00BC26",
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: THEME.accent,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 9,
-    shadowColor: "#00BC26",
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
-    elevation: 3,
+    gap: 8,
   },
   searchButtonPressed: {
-    transform: [
-      {
-        scale: 0.98,
-      },
-    ],
+    transform: [{ scale: 0.98 }],
+    opacity: 0.9,
   },
   searchButtonDisabled: {
     opacity: 0.7,
   },
   searchButtonText: {
     color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "800",
+    fontSize: 15,
+    fontWeight: "700",
   },
 
-  placeholderCard: {
-    marginTop: 16,
+  // Popular routes chips
+  chipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  popularChip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    padding: 16,
-    gap: 14,
-    shadowColor: "#000000",
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
-    elevation: 1,
+    gap: 5,
+    backgroundColor: THEME.card,
+    borderRadius: 20,
+    borderWidth: THEME.borderWidth,
+    borderColor: THEME.cardBorder,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
   },
-  placeholderIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "#E7F9EB",
-    alignItems: "center",
-    justifyContent: "center",
+  popularChipSelected: {
+    backgroundColor: THEME.accentTint,
+    borderColor: THEME.accent,
   },
-  placeholderBody: {
-    flex: 1,
+  chipPressed: {
+    transform: [{ scale: 0.96 }],
   },
-  placeholderTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#1C1C1E",
-  },
-  placeholderText: {
-    marginTop: 3,
+  popularChipText: {
     fontSize: 13,
-    lineHeight: 19,
-    color: "#6B7280",
+    fontWeight: "600",
+    color: THEME.textPrimary,
+  },
+  popularChipTextSelected: {
+    color: THEME.accentText,
+    fontWeight: "700",
   },
 
+  // Modal Sheet Styles
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(0,0,0,0.4)",
     justifyContent: "flex-end",
   },
-
   citySheet: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    maxHeight: "88%",
-    paddingTop: 20,
-    paddingHorizontal: 20,
-    paddingBottom: 30,
+    backgroundColor: THEME.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: "85%",
+    paddingTop: 18,
+    paddingHorizontal: 18,
+    paddingBottom: 28,
   },
-
   dateSheet: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 20,
-    paddingHorizontal: 20,
+    backgroundColor: THEME.card,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 18,
+    paddingHorizontal: 18,
     paddingBottom: 24,
   },
-
   sheetHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 16,
+    marginBottom: 14,
   },
   sheetTitle: {
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: "800",
-    color: "#1C1C1E",
-    letterSpacing: -0.3,
+    color: THEME.textPrimary,
+    letterSpacing: -0.2,
   },
   sheetCloseButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
@@ -1424,22 +2062,22 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F6F8F6",
-    borderRadius: 14,
+    backgroundColor: "#FAFCFA",
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E3EAE5",
-    paddingHorizontal: 14,
-    minHeight: 50,
-    marginBottom: 14,
+    borderColor: THEME.cardBorder,
+    paddingHorizontal: 12,
+    minHeight: 46,
+    marginBottom: 12,
   },
   searchIcon: {
-    marginRight: 10,
+    marginRight: 8,
   },
   searchInput: {
     flex: 1,
-    height: 48,
-    fontSize: 15,
-    color: "#1C1C1E",
+    height: 44,
+    fontSize: 14,
+    color: THEME.textPrimary,
   },
   searchLoader: {
     marginLeft: 8,
@@ -1447,19 +2085,16 @@ const styles = StyleSheet.create({
   clearButton: {
     marginLeft: 8,
   },
-
   cityLoading: {
-    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
+    paddingVertical: 40,
   },
   cityLoadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: "#6B7280",
+    marginTop: 10,
+    fontSize: 13,
+    color: THEME.textSecondary,
   },
-
   cityList: {
     flexGrow: 0,
   },
@@ -1468,49 +2103,48 @@ const styles = StyleSheet.create({
   },
   cityEmpty: {
     textAlign: "center",
-    fontSize: 14,
-    lineHeight: 20,
-    color: "#9CA1A9",
-    paddingVertical: 30,
-    paddingHorizontal: 20,
+    fontSize: 13,
+    lineHeight: 18,
+    color: THEME.textSecondary,
+    paddingVertical: 24,
+    paddingHorizontal: 16,
   },
-
   cityResult: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 14,
+    backgroundColor: THEME.card,
+    borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 12,
-    marginBottom: 8,
+    paddingVertical: 10,
+    marginBottom: 6,
     borderWidth: 1,
-    borderColor: "#F0F1F3",
+    borderColor: "#F0F3F1",
   },
   cityResultPressed: {
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "#F0FAF2",
   },
   cityPin: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#E7F9EB",
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: THEME.accentTint,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 12,
+    marginRight: 10,
   },
   cityResultText: {
     flex: 1,
   },
   cityName: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "700",
-    color: "#1C1C1E",
+    color: THEME.textPrimary,
   },
   cityAddress: {
     marginTop: 2,
     fontSize: 12,
-    lineHeight: 17,
-    color: "#6B7280",
+    lineHeight: 16,
+    color: THEME.textSecondary,
   },
 
   monthNav: {
@@ -1521,27 +2155,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   monthNavButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: "#F3F4F6",
     alignItems: "center",
     justifyContent: "center",
   },
   monthNavButtonPressed: {
     backgroundColor: "#E8EAEC",
-    transform: [
-      {
-        scale: 0.95,
-      },
-    ],
+    transform: [{ scale: 0.95 }],
   },
   monthLabel: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "800",
-    color: "#1C1C1E",
+    color: THEME.textPrimary,
   },
-
   weekdayRow: {
     flexDirection: "row",
     marginBottom: 6,
@@ -1551,33 +2180,32 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 12,
     fontWeight: "700",
-    color: "#9CA1A9",
+    color: THEME.textSecondary,
   },
-
   calendarGrid: {
-    marginBottom: 16,
+    marginBottom: 14,
   },
   calendarRow: {
     flexDirection: "row",
   },
   dayCell: {
     flex: 1,
-    height: 42,
-    borderRadius: 21,
+    height: 38,
+    borderRadius: 19,
     alignItems: "center",
     justifyContent: "center",
     margin: 2,
   },
   dayCellSelected: {
-    backgroundColor: "#00BC26",
+    backgroundColor: THEME.accent,
   },
   dayCellPressed: {
-    backgroundColor: "#E7F9EB",
+    backgroundColor: THEME.accentTint,
   },
   dayText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
-    color: "#1C1C1E",
+    color: THEME.textPrimary,
   },
   dayTextSelected: {
     color: "#FFFFFF",
@@ -1587,13 +2215,12 @@ const styles = StyleSheet.create({
     color: "#C7CBCF",
     fontWeight: "500",
   },
-
   dateCancelButton: {
-    height: 48,
-    borderRadius: 14,
+    height: 44,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#FFFFFF",
+    borderColor: THEME.cardBorder,
+    backgroundColor: THEME.card,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1601,8 +2228,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#F3F4F6",
   },
   dateCancelText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#1C1C1E",
+    fontSize: 14,
+    fontWeight: "600",
+    color: THEME.textPrimary,
   },
 });

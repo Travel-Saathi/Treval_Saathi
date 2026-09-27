@@ -83,6 +83,11 @@ export default function TabLayout() {
           height: 64,
           paddingTop: 6,
           paddingBottom: 8,
+          backgroundColor: "#FFFFFF",
+          borderTopWidth: 1,
+          borderTopColor: "#E3EFE6",
+          elevation: 0,
+          shadowOpacity: 0,
         },
 
         tabBarLabelStyle: {
@@ -141,6 +146,14 @@ export default function TabLayout() {
         options={{
           headerShown: false,
           href: null,
+        }}
+      />
+
+      <Tabs.Screen
+        name="testsearch"
+        options={{
+          headerShown: false,
+          href: __DEV__ ? undefined : null,
         }}
       />
     </Tabs>
